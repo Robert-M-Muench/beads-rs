@@ -99,30 +99,46 @@ pub fn load_for_repo(repo_root: Option<&Path>) -> Result<Config> {
 
 pub fn write_config(path: &Path, cfg: &Config) -> Result<()> {
     if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).map_err(|e| ConfigError::Io { path: dir.to_path_buf(), source: e })?;
+        fs::create_dir_all(dir).map_err(|e| ConfigError::Io {
+            path: dir.to_path_buf(),
+            source: e,
+        })?;
     }
     let contents = toml::to_string_pretty(cfg).map_err(|e| ConfigError::Render { source: e })?;
     atomic_write(path, contents.as_bytes())
 }
 
 fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
-    let dir = path
-        .parent()
-        .ok_or_else(|| ConfigError::MissingParent { path: path.to_path_buf() })?;
-    let temp = tempfile::NamedTempFile::new_in(dir).map_err(|e| ConfigError::Io { path: dir.to_path_buf(), source: e })?;
-    fs::write(temp.path(), data).map_err(|e| ConfigError::Io { path: temp.path().to_path_buf(), source: e })?;
-    temp.persist(path).map_err(|e| ConfigError::Io { path: path.to_path_buf(), source: e.error })?;
+    let dir = path.parent().ok_or_else(|| ConfigError::MissingParent {
+        path: path.to_path_buf(),
+    })?;
+    let temp = tempfile::NamedTempFile::new_in(dir).map_err(|e| ConfigError::Io {
+        path: dir.to_path_buf(),
+        source: e,
+    })?;
+    fs::write(temp.path(), data).map_err(|e| ConfigError::Io {
+        path: temp.path().to_path_buf(),
+        source: e,
+    })?;
+    temp.persist(path).map_err(|e| ConfigError::Io {
+        path: path.to_path_buf(),
+        source: e.error,
+    })?;
     Ok(())
 }
-
-
 
 fn read_toml<T>(path: &Path) -> Result<T>
 where
     T: DeserializeOwned,
 {
-    let contents = fs::read_to_string(path).map_err(|e| ConfigError::Io { path: path.to_path_buf(), source: e })?;
-    toml::from_str(&contents).map_err(|e| ConfigError::Parse { path: path.to_path_buf(), source: e })
+    let contents = fs::read_to_string(path).map_err(|e| ConfigError::Io {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
+    toml::from_str(&contents).map_err(|e| ConfigError::Parse {
+        path: path.to_path_buf(),
+        source: e,
+    })
 }
 
 #[cfg(test)]

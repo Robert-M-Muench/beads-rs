@@ -24,7 +24,5 @@ pub enum ConfigError {
     },
 
     #[error("config path `{path}` is missing parent directory")]
-    MissingParent {
-        path: std::path::PathBuf,
-    },
+    MissingParent { path: std::path::PathBuf },
 }
