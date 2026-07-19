@@ -107,9 +107,7 @@ pub fn write_config(path: &Path, cfg: &Config) -> Result<()> {
 }
 
 fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
-    let dir = path
-        .parent()
-        .ok_or(ConfigError::MissingParent)?;
+    let dir = path.parent().ok_or(ConfigError::MissingParent)?;
     let temp = tempfile::NamedTempFile::new_in(dir).map_err(|e| ConfigError::CreateTemp {
         path: dir.to_path_buf(),
         source: e,

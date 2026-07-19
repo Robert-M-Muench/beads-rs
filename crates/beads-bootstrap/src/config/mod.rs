@@ -1,7 +1,7 @@
 //! Canonical app config schema, merge logic, and file IO.
 
-mod error;
 mod env;
+mod error;
 mod load;
 mod merge;
 mod schema;
