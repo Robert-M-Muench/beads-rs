@@ -107,9 +107,9 @@ pub fn write_config(path: &Path, cfg: &Config) -> Result<()> {
 }
 
 fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
-    let dir = path
-        .parent()
-        .ok_or_else(|| ConfigError::SystemDir { reason: "config path missing parent directory".to_string() })?;
+    let dir = path.parent().ok_or_else(|| ConfigError::SystemDir {
+        reason: "config path missing parent directory".to_string(),
+    })?;
 
     let temp = tempfile::NamedTempFile::new_in(dir).map_err(|e| ConfigError::SystemDir {
         reason: format!("failed to create temp file in {}: {e}", dir.display()),
