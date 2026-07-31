@@ -107,10 +107,10 @@ pub fn discover_repo_root() -> Option<PathBuf> {
 pub fn load_for_repo(repo_root: Option<&Path>) -> Result<Config, ConfigError> {
     // Keep daemon runtime reload semantics stable: repo config takes precedence,
     // user config is used only when repo config is absent.
-    if let Some(root) = repo_root {
-        if let Some(repo_config) = load_repo_config_full(root)? {
-            return Ok(finalize_loaded_config(repo_config));
-        }
+    if let Some(root) = repo_root
+        && let Some(repo_config) = load_repo_config_full(root)?
+    {
+        return Ok(finalize_loaded_config(repo_config));
     }
 
     if let Some(user_config) = load_user_config_full()? {
