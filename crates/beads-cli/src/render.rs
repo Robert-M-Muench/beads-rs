@@ -147,15 +147,17 @@ pub fn render_query<R: HumanRenderer>(q: &QueryResult, renderer: &R) -> String {
 }
 
 pub fn print_line(line: &str) -> crate::Result<()> {
-    use std::io::Write;
     let mut stdout = std::io::stdout().lock();
-    let line = wrap_human_output(line);
-    if let Err(err) = writeln!(stdout, "{line}")
+    if let Err(err) = write_human_output(&mut stdout, line)
         && err.kind() != std::io::ErrorKind::BrokenPipe
     {
         return Err(beads_surface::ipc::IpcError::Transport { source: err });
     }
     Ok(())
+}
+
+fn write_human_output(mut writer: impl std::io::Write, text: &str) -> std::io::Result<()> {
+    writeln!(writer, "{}", wrap_human_output(text))
 }
 
 fn wrap_human_output(text: &str) -> String {
@@ -601,10 +603,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn human_output_wraps_at_the_shared_width_with_hanging_indents() {
+    fn human_output_writer_wraps_at_the_shared_width_with_hanging_indents() {
         let input = format!("  - {}", ["word"; 40].join(" "));
+        let mut bytes = Vec::new();
 
-        let output = wrap_human_output(&input);
+        write_human_output(&mut bytes, &input).expect("write output");
+        let output = String::from_utf8(bytes).expect("UTF-8 output");
         let lines = output.lines().collect::<Vec<_>>();
 
         assert!(lines.len() > 1);
