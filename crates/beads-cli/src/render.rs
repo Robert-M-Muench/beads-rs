@@ -12,8 +12,12 @@ use beads_surface::OpResult;
 use beads_surface::ipc::ResponsePayload;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
+use textwrap::{Options, WordSplitter};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
+
+/// Default width for human-facing CLI output.
+pub(crate) const HUMAN_TEXT_WIDTH: usize = 120;
 
 pub trait HumanRenderer {
     fn render_created(&self, id: &str) -> String;
@@ -145,12 +149,87 @@ pub fn render_query<R: HumanRenderer>(q: &QueryResult, renderer: &R) -> String {
 pub fn print_line(line: &str) -> crate::Result<()> {
     use std::io::Write;
     let mut stdout = std::io::stdout().lock();
+    let line = wrap_human_output(line);
     if let Err(err) = writeln!(stdout, "{line}")
         && err.kind() != std::io::ErrorKind::BrokenPipe
     {
         return Err(beads_surface::ipc::IpcError::Transport { source: err });
     }
     Ok(())
+}
+
+fn wrap_human_output(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut fence = None;
+
+    for (index, line) in text.split('\n').enumerate() {
+        if index > 0 {
+            output.push('\n');
+        }
+
+        let line_fence = markdown_fence(line);
+        if fence.is_some() || line_fence.is_some() || is_markdown_table_row(line) {
+            output.push_str(line);
+        } else {
+            output.push_str(&wrap_human_line(line));
+        }
+
+        if let Some(line_fence) = line_fence {
+            match fence {
+                Some(open_fence) if open_fence == line_fence => fence = None,
+                None => fence = Some(line_fence),
+                _ => {}
+            }
+        }
+    }
+
+    output
+}
+
+fn wrap_human_line(line: &str) -> String {
+    let content = line.trim_start_matches([' ', '\t']);
+    let indent = &line[..line.len() - content.len()];
+    let hanging_width = markdown_list_marker_width(content).unwrap_or(0);
+    let subsequent_indent = format!("{indent}{}", " ".repeat(hanging_width));
+    let options = Options::new(HUMAN_TEXT_WIDTH)
+        .initial_indent(indent)
+        .subsequent_indent(&subsequent_indent)
+        .break_words(false)
+        .word_splitter(WordSplitter::NoHyphenation);
+
+    textwrap::fill(content, options)
+}
+
+fn markdown_list_marker_width(line: &str) -> Option<usize> {
+    for marker in ["- ", "* ", "+ "] {
+        if line.starts_with(marker) {
+            return Some(marker.len());
+        }
+    }
+
+    let digit_count = line.bytes().take_while(u8::is_ascii_digit).count();
+    let rest = line.get(digit_count..)?;
+    if digit_count > 0 && (rest.starts_with(". ") || rest.starts_with(") ")) {
+        return Some(digit_count + 2);
+    }
+
+    None
+}
+
+fn markdown_fence(line: &str) -> Option<&'static str> {
+    let line = line.trim_start();
+    if line.starts_with("```") {
+        Some("```")
+    } else if line.starts_with("~~~") {
+        Some("~~~")
+    } else {
+        None
+    }
+}
+
+fn is_markdown_table_row(line: &str) -> bool {
+    let line = line.trim();
+    line.starts_with('|') && line.ends_with('|')
 }
 
 pub fn print_json<T: Serialize>(value: &T) -> crate::Result<()> {
@@ -514,5 +593,40 @@ pub fn dep_kind_to_go_wire(kind: &str) -> String {
     match kind {
         "parent" => "parent-child".to_string(),
         other => other.replace('_', "-"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn human_output_wraps_at_the_shared_width_with_hanging_indents() {
+        let input = format!("  - {}", ["word"; 40].join(" "));
+
+        let output = wrap_human_output(&input);
+        let lines = output.lines().collect::<Vec<_>>();
+
+        assert!(lines.len() > 1);
+        assert!(lines.iter().all(|line| line.len() <= HUMAN_TEXT_WIDTH));
+        assert!(lines[0].starts_with("  - "));
+        assert!(lines[1..].iter().all(|line| line.starts_with("    ")));
+    }
+
+    #[test]
+    fn human_output_preserves_explicit_structure_and_preformatted_blocks() {
+        let code = "x".repeat(HUMAN_TEXT_WIDTH + 20);
+        let input = format!("Description:\n\n```text\n{code}\n```\n| {code} |\n");
+
+        let output = wrap_human_output(&input);
+
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn human_output_does_not_split_unbreakable_values() {
+        let value = "https://example.test/".to_string() + &"segment".repeat(30);
+
+        assert_eq!(wrap_human_output(&value), value);
     }
 }

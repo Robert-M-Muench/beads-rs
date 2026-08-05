@@ -5,6 +5,7 @@ NEVER: rebuild a parallel command tree in `beads-rs` or import daemon internals 
 ## Routing
 - `src/cli.rs` owns the clap tree and top-level dispatch. New subcommands start there and in `src/commands/`.
 - `src/commands/` owns typed request construction and human output. `src/render.rs` owns shared response rendering once a payload comes back.
+- Human renderers return structured, unwrapped text. `src/render.rs` owns the single default-width policy and applies wrapping at the stdout boundary; do not hardcode widths in command renderers.
 - `src/runtime.rs` owns actor resolution, read-consistency shaping, and IPC connection reuse. Command code should not open sockets or rediscover actor/env state on its own.
 - `src/backend.rs` is the crate-local host seam for non-IPC commands such as store/admin offline flows, migration, and upgrade support that cannot be modeled as ordinary daemon requests.
 - The host seam over this crate lives in `crates/beads-rs/src/cli/`.
