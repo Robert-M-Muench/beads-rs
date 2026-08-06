@@ -27,6 +27,7 @@ pub mod init;
 pub mod input;
 pub mod label;
 pub mod list;
+pub mod log;
 pub mod migrate;
 pub mod onboard;
 pub mod prime;
@@ -149,6 +150,10 @@ impl crate::render::HumanRenderer for CliCommandRenderer {
 
     fn render_notes(&self, notes: &[Note]) -> String {
         comments::render_notes(notes)
+    }
+
+    fn render_field_history(&self, history: &beads_api::FieldHistory) -> String {
+        log::render_field_history(history)
     }
 
     fn render_status(&self, out: &StatusOutput) -> String {

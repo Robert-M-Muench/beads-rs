@@ -1,6 +1,7 @@
 //! Issue and status schemas.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::deps::DepEdge;
 use beads_core::{
@@ -155,6 +156,86 @@ pub struct DeletedLookup {
 // =============================================================================
 // Notes
 // =============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IssueField {
+    Title,
+    Description,
+    Design,
+    AcceptanceCriteria,
+    Priority,
+    Type,
+    ExternalRef,
+    SourceRepo,
+    EstimatedMinutes,
+    Status,
+    ClosedOnBranch,
+    Assignee,
+    AssigneeExpires,
+}
+
+impl IssueField {
+    pub const VALID_NAMES: &str = "title, description, design, acceptance_criteria, priority, type, external_ref, source_repo, estimated_minutes, status, closed_on_branch, assignee, assignee_expires";
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "title" => Some(Self::Title),
+            "description" => Some(Self::Description),
+            "design" => Some(Self::Design),
+            "acceptance" | "acceptance_criteria" | "acceptance-criteria" => {
+                Some(Self::AcceptanceCriteria)
+            }
+            "priority" => Some(Self::Priority),
+            "type" | "bead_type" | "issue_type" => Some(Self::Type),
+            "external_ref" | "external-ref" => Some(Self::ExternalRef),
+            "source_repo" | "source-repo" => Some(Self::SourceRepo),
+            "estimated_minutes" | "estimate" => Some(Self::EstimatedMinutes),
+            "status" => Some(Self::Status),
+            "closed_on_branch" | "closed-on-branch" => Some(Self::ClosedOnBranch),
+            "assignee" => Some(Self::Assignee),
+            "assignee_expires" | "assignee-expires" => Some(Self::AssigneeExpires),
+            _ => None,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Title => "title",
+            Self::Description => "description",
+            Self::Design => "design",
+            Self::AcceptanceCriteria => "acceptance_criteria",
+            Self::Priority => "priority",
+            Self::Type => "type",
+            Self::ExternalRef => "external_ref",
+            Self::SourceRepo => "source_repo",
+            Self::EstimatedMinutes => "estimated_minutes",
+            Self::Status => "status",
+            Self::ClosedOnBranch => "closed_on_branch",
+            Self::Assignee => "assignee",
+            Self::AssigneeExpires => "assignee_expires",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FieldHistoryEntry {
+    pub at: WriteStamp,
+    pub by: String,
+    pub value: Value,
+    pub origin_replica_id: String,
+    pub origin_seq: u64,
+    pub txn_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FieldHistory {
+    pub id: String,
+    pub field: IssueField,
+    pub entries: Vec<FieldHistoryEntry>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Note {

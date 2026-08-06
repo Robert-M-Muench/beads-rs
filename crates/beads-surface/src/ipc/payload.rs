@@ -1,4 +1,4 @@
-use beads_api::{AdminFingerprintMode, AdminFingerprintSample};
+use beads_api::{AdminFingerprintMode, AdminFingerprintSample, IssueField};
 use beads_core::{
     BeadId, BeadSlug, BeadType, BranchName, DepKind, IssueStatus, NamespaceId, Priority, StoreId,
 };
@@ -36,6 +36,12 @@ pub struct IdPayload {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IdsPayload {
     pub ids: Vec<BeadId>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FieldHistoryPayload {
+    pub id: BeadId,
+    pub field: IssueField,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

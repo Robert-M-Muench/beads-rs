@@ -115,6 +115,9 @@ pub enum Command {
     )]
     List(commands::list::ListArgs),
 
+    /// Show journal history for one bead field.
+    Log(commands::log::LogArgs),
+
     /// Search beads by text (alias for list QUERY).
     Search(commands::search::SearchArgs),
 
@@ -289,6 +292,7 @@ pub fn command_name(command: &Command) -> String {
         Command::Create(_) => "create".to_string(),
         Command::Show(_) => "show".to_string(),
         Command::List(_) => "list".to_string(),
+        Command::Log(_) => "log".to_string(),
         Command::Search(_) => "search".to_string(),
         Command::Ready(_) => "ready".to_string(),
         Command::Blocked => "blocked".to_string(),
@@ -395,6 +399,7 @@ where
         Command::Create(args) => commands::create::handle(ctx, args).map_err(Into::into),
         Command::Show(args) => commands::show::handle(ctx, args).map_err(Into::into),
         Command::List(args) => commands::list::handle_list(ctx, args).map_err(Into::into),
+        Command::Log(args) => commands::log::handle(ctx, args).map_err(Into::into),
         Command::Search(args) => commands::search::handle(ctx, args).map_err(Into::into),
         Command::Ready(args) => commands::ready::handle(ctx, args).map_err(Into::into),
         Command::Blocked => commands::blocked::handle(ctx).map_err(Into::into),
@@ -703,5 +708,18 @@ mod tests {
             "--append",
         ]);
         assert!(matches!(append.command, Command::Update(args) if args.append && !args.replace));
+    }
+
+    #[test]
+    fn parse_log_requires_a_field() {
+        let cli = parse_from(["bd", "log", "beads-rs-k8u3", "--field", "status"]);
+        assert!(matches!(
+            cli.command,
+            Command::Log(args)
+                if args.id == "beads-rs-k8u3" && args.field == "status"
+        ));
+
+        let missing = Cli::try_parse_from(["bd", "log", "beads-rs-k8u3"]);
+        assert!(missing.is_err());
     }
 }

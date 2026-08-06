@@ -124,6 +124,13 @@ impl Daemon {
                     .into()
             }
 
+            Request::FieldHistory { ctx, payload } => {
+                let repo = ctx.repo.path;
+                let read = ctx.read;
+                self.query_field_history(&repo, &payload.id, payload.field, read, git_tx)
+                    .into()
+            }
+
             Request::List { ctx, payload } => {
                 let repo = ctx.repo.path;
                 let read = ctx.read;

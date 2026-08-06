@@ -356,6 +356,14 @@ pub enum Request {
         payload: IdPayload,
     },
 
+    /// Walk the journal for changes to one bead field.
+    FieldHistory {
+        #[serde(flatten)]
+        ctx: ReadCtx,
+        #[serde(flatten)]
+        payload: FieldHistoryPayload,
+    },
+
     /// List beads.
     List {
         #[serde(flatten)]
@@ -552,6 +560,7 @@ impl Request {
             Request::Show { ctx, .. } => info_from_read("show", ctx),
             Request::ShowMultiple { ctx, .. } => info_from_read("show_multiple", ctx),
             Request::ShowDetails { ctx, .. } => info_from_read("show_details", ctx),
+            Request::FieldHistory { ctx, .. } => info_from_read("field_history", ctx),
             Request::List { ctx, .. } => info_from_read("list", ctx),
             Request::TrackerList { ctx, .. } => info_from_read("tracker_list", ctx),
             Request::Ready { ctx, .. } => info_from_read("ready", ctx),

@@ -4,8 +4,8 @@ use beads_api::{
     AdminReloadLimitsOutput, AdminReloadPoliciesOutput, AdminReloadReplicationOutput,
     AdminRotateReplicaIdOutput, AdminScrubOutput, AdminStatusOutput, AdminStoreLockInfoOutput,
     AdminStoreUnlockOutput, BlockedIssue, CountResult, DaemonInfo, DeletedLookup, DepCycles,
-    DepEdge, EpicStatus, Issue, IssueSummary, Note, QueryResult, ReadyResult, ShowDetails,
-    StatusOutput, Tombstone, TrackerIssue,
+    DepEdge, EpicStatus, FieldHistory, Issue, IssueSummary, Note, QueryResult, ReadyResult,
+    ShowDetails, StatusOutput, Tombstone, TrackerIssue,
 };
 use beads_core::{BeadRef, WallClock, WriteStamp};
 use beads_surface::OpResult;
@@ -38,6 +38,7 @@ pub trait HumanRenderer {
     fn render_deps(&self, incoming: &[DepEdge], outgoing: &[DepEdge]) -> String;
     fn render_dep_cycles(&self, out: &DepCycles) -> String;
     fn render_notes(&self, notes: &[Note]) -> String;
+    fn render_field_history(&self, history: &FieldHistory) -> String;
     fn render_status(&self, out: &StatusOutput) -> String;
     fn render_blocked(&self, blocked: &[BlockedIssue]) -> String;
     fn render_ready(&self, result: &ReadyResult) -> String;
@@ -111,6 +112,7 @@ pub fn render_query<R: HumanRenderer>(q: &QueryResult, renderer: &R) -> String {
         QueryResult::Deps { incoming, outgoing } => renderer.render_deps(incoming, outgoing),
         QueryResult::DepCycles(out) => renderer.render_dep_cycles(out),
         QueryResult::Notes(notes) => renderer.render_notes(notes),
+        QueryResult::FieldHistory(history) => renderer.render_field_history(history),
         QueryResult::Status(out) => renderer.render_status(out),
         QueryResult::Blocked(blocked) => renderer.render_blocked(blocked),
         QueryResult::Ready(result) => renderer.render_ready(result),
@@ -298,6 +300,7 @@ fn cli_query_json(q: &QueryResult) -> Value {
                 })
                 .collect::<Vec<_>>(),
         ),
+        QueryResult::FieldHistory(history) => json!(history.entries),
         other => json!(other),
     }
 }
@@ -601,6 +604,33 @@ pub fn dep_kind_to_go_wire(kind: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn field_history_json_is_a_bare_array_including_when_empty() {
+        let empty = ResponsePayload::query(QueryResult::FieldHistory(FieldHistory {
+            id: "bd-history".to_string(),
+            field: beads_api::IssueField::Status,
+            entries: Vec::new(),
+        }));
+        assert_eq!(cli_json_payload(&empty), json!([]));
+
+        let one = ResponsePayload::query(QueryResult::FieldHistory(FieldHistory {
+            id: "bd-history".to_string(),
+            field: beads_api::IssueField::Status,
+            entries: vec![beads_api::FieldHistoryEntry {
+                at: WriteStamp::new(1_000, 2),
+                by: "alice".to_string(),
+                value: json!("In Progress"),
+                origin_replica_id: "replica".to_string(),
+                origin_seq: 3,
+                txn_id: "txn".to_string(),
+                reason: None,
+            }],
+        }));
+        let value = cli_json_payload(&one);
+        assert_eq!(value.as_array().map(Vec::len), Some(1));
+        assert_eq!(value[0]["value"], json!("In Progress"));
+    }
 
     #[test]
     fn human_output_writer_wraps_at_the_shared_width_with_hanging_indents() {

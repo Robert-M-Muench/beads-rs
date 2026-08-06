@@ -10,7 +10,7 @@ description = "API types and IPC protocol for beads-rs"
 [dependencies]
 beads-core = { path = "../beads-core" }
 serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
-serde_json = { workspace = true }
 uuid = { workspace = true }

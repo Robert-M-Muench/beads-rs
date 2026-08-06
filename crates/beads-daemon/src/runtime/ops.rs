@@ -19,6 +19,7 @@ use crate::core::{
 };
 use crate::error::{Effect, Transience};
 use crate::git::{SyncError, WireError};
+use crate::runtime::repl::WalRangeError;
 use crate::runtime::store::runtime::StoreRuntimeError;
 use crate::runtime::wal::EventWalError;
 use beads_daemon_core::durability::DurabilityError;
@@ -105,6 +106,9 @@ pub enum OpError {
 
     #[error(transparent)]
     Sync(#[from] Box<SyncError>),
+
+    #[error(transparent)]
+    WalRange(#[from] Box<WalRangeError>),
 
     #[error("bead is deleted: {0}")]
     BeadDeleted(BeadId),
@@ -222,6 +226,7 @@ impl OpError {
             OpError::RepoNotInitialized(_) => CliErrorCode::RepoNotInitialized.into(),
             OpError::StoreRuntime(err) => err.code(),
             OpError::Sync(err) => err.code(),
+            OpError::WalRange(err) => err.as_error_payload().code,
             OpError::BeadDeleted(_) => CliErrorCode::BeadDeleted.into(),
             OpError::NoteTooLarge { .. } => ProtocolErrorCode::NoteTooLarge.into(),
             OpError::OpsTooMany { .. } => ProtocolErrorCode::OpsTooMany.into(),
@@ -257,6 +262,7 @@ impl OpError {
     pub fn transience(&self) -> Transience {
         match self {
             OpError::Sync(e) => e.transience(),
+            OpError::WalRange(_) => Transience::Permanent,
             OpError::AlreadyClaimed { .. } => Transience::Retryable,
             OpError::Overloaded { .. } => Transience::Retryable,
             OpError::RateLimited { .. } => Transience::Retryable,
@@ -300,6 +306,7 @@ impl OpError {
     pub fn effect(&self) -> Effect {
         match self {
             OpError::Sync(e) => e.effect(),
+            OpError::WalRange(_) => Effect::None,
             OpError::EventWal(_) => Effect::None,
             OpError::DurabilityTimeout { .. } => Effect::Some,
             OpError::StoreRuntime(_) => Effect::None,
@@ -422,6 +429,7 @@ impl IntoErrorPayload for OpError {
             }
             OpError::StoreRuntime(err) => err.into_error_payload(),
             OpError::Sync(err) => err.into_error_payload(),
+            OpError::WalRange(err) => err.as_error_payload(),
             OpError::BeadDeleted(id) => {
                 ErrorPayload::new(CliErrorCode::BeadDeleted.into(), message, retryable)
                     .with_details(error_details::BeadDeletedDetails { id })
@@ -621,6 +629,12 @@ fn legacy_deps_migration_hint(err: &SyncError) -> Option<OpError> {
 impl From<EventWalError> for OpError {
     fn from(err: EventWalError) -> Self {
         OpError::EventWal(Box::new(err))
+    }
+}
+
+impl From<WalRangeError> for OpError {
+    fn from(err: WalRangeError) -> Self {
+        OpError::WalRange(Box::new(err))
     }
 }
 

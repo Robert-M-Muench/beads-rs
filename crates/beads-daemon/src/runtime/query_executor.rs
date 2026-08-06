@@ -6,23 +6,28 @@ use std::path::Path;
 use std::time::Instant;
 
 use crossbeam::channel::Sender;
+use serde::Serialize;
+use serde_json::Value;
 
 use super::core::{Daemon, ReadScope};
 use super::git_worker::GitOp;
 use super::ipc::{ReadConsistency, Response, ResponseExt, ResponsePayload, TrackerListPayload};
 use super::ops::{MapLiveError, OpError};
 use super::query::{Filters, QueryResult};
+use super::repl::{WalRangeError, WalRangeReader};
 use super::store::runtime::StoreRuntime;
 use crate::core::{
     BeadId, BeadProjection, BeadRef, BeadView, CanonicalState, DepKind, IssueStatus, NamespaceId,
-    NamespacePolicy, StoreState, WallClock,
+    NamespacePolicy, Seq0, StoreState, ValidatedEventKindV1, ValidatedTxnOpV1, WallClock,
+    WirePatch, WriteStamp, decode_event_body,
 };
 use crate::git_lane::GitLaneState;
 use crate::remote::RemoteUrl;
 use beads_api::{
-    BlockedIssue, CountGroup, CountResult, DeletedLookup, DepCycles, DepEdge, EpicStatus, Issue,
-    IssueSummary, Note, ReadyResult, ShowDetails, StatusOutput, StatusSummary, SyncStatus,
-    SyncWarning, Tombstone, TrackerBlocker, TrackerIssue,
+    BlockedIssue, CountGroup, CountResult, DeletedLookup, DepCycles, DepEdge, EpicStatus,
+    FieldHistory, FieldHistoryEntry, Issue, IssueField, IssueSummary, Note, ReadyResult,
+    ShowDetails, StatusOutput, StatusSummary, SyncStatus, SyncWarning, Tombstone, TrackerBlocker,
+    TrackerIssue,
 };
 
 mod helpers;
@@ -63,6 +68,132 @@ fn require_live_store_ref(
     };
     state.require_live(id).map_live_err(id)?;
     Ok(())
+}
+
+fn json_value<T: Serialize>(value: &T) -> Value {
+    serde_json::to_value(value).expect("validated domain value must serialize")
+}
+
+fn wire_patch_value<T: Serialize>(patch: &WirePatch<T>) -> Option<Value> {
+    match patch {
+        WirePatch::Keep => None,
+        WirePatch::Clear => Some(Value::Null),
+        WirePatch::Set(value) => Some(json_value(value)),
+    }
+}
+
+fn field_value_from_upsert(field: IssueField, patch: &crate::core::WireBeadPatch) -> Option<Value> {
+    match field {
+        IssueField::Title => patch.title.as_ref().map(json_value),
+        IssueField::Description => patch.description.as_ref().map(json_value),
+        IssueField::Design => wire_patch_value(&patch.design),
+        IssueField::AcceptanceCriteria => wire_patch_value(&patch.acceptance_criteria),
+        IssueField::Priority => patch.priority.as_ref().map(json_value),
+        IssueField::Type => patch.bead_type.as_ref().map(json_value),
+        IssueField::ExternalRef => wire_patch_value(&patch.external_ref),
+        IssueField::SourceRepo => wire_patch_value(&patch.source_repo),
+        IssueField::EstimatedMinutes => wire_patch_value(&patch.estimated_minutes),
+        IssueField::Status => patch.status.as_ref().map(json_value),
+        IssueField::ClosedOnBranch => wire_patch_value(&patch.closed_on_branch),
+        IssueField::Assignee => wire_patch_value(&patch.assignee),
+        IssueField::AssigneeExpires => wire_patch_value(&patch.assignee_expires),
+    }
+}
+
+fn history_entry_from_event(
+    id: &BeadId,
+    field: IssueField,
+    body: &crate::core::ValidatedEventBody,
+) -> Option<FieldHistoryEntry> {
+    let ValidatedEventKindV1::TxnV1(txn) = body.kind();
+    let value = txn.delta.iter().find_map(|op| match op {
+        ValidatedTxnOpV1::BeadUpsert(patch) if patch.id == *id => {
+            field_value_from_upsert(field, patch.as_inner())
+        }
+        _ => None,
+    })?;
+
+    let reason = (field == IssueField::Status)
+        .then(|| {
+            txn.delta.iter().find_map(|op| match op {
+                ValidatedTxnOpV1::NoteAppend(note) if note.bead_id == *id => note
+                    .note
+                    .content
+                    .strip_prefix("reopen: ")
+                    .map(str::to_owned),
+                _ => None,
+            })
+        })
+        .flatten();
+
+    Some(FieldHistoryEntry {
+        at: WriteStamp::new(txn.hlc_max.physical_ms, txn.hlc_max.logical),
+        by: txn.hlc_max.actor_id.as_str().to_owned(),
+        value,
+        origin_replica_id: body.origin_replica_id.to_string(),
+        origin_seq: body.origin_seq.get(),
+        txn_id: body.txn_id.to_string(),
+        reason,
+    })
+}
+
+fn field_history_from_wal(
+    reader: &WalRangeReader,
+    limits: &crate::core::Limits,
+    namespace: &NamespaceId,
+    origins: &[(crate::core::ReplicaId, Seq0)],
+    id: &BeadId,
+    field: IssueField,
+) -> Result<Vec<FieldHistoryEntry>, OpError> {
+    let max_bytes = limits
+        .max_event_batch_bytes
+        .max(limits.max_wal_record_bytes);
+    let mut entries = Vec::new();
+
+    for (origin, applied_seq) in origins {
+        let mut cursor = Seq0::ZERO;
+        while cursor < *applied_seq {
+            let frames = reader
+                .read_range(namespace, origin, cursor, max_bytes)
+                .map_err(OpError::from)?;
+            let Some(last) = frames.last() else {
+                return Err(OpError::from(WalRangeError::MissingRange {
+                    namespace: namespace.clone(),
+                    origin: *origin,
+                    from_seq_excl: cursor,
+                }));
+            };
+            let next_cursor = Seq0::new(last.eid().origin_seq.get());
+            if next_cursor <= cursor {
+                return Err(OpError::Internal("wal history scan did not advance"));
+            }
+
+            for frame in frames {
+                let (_, body) =
+                    decode_event_body(frame.bytes().as_ref(), limits).map_err(|err| {
+                        OpError::from(WalRangeError::Corrupt {
+                            namespace: namespace.clone(),
+                            segment_id: None,
+                            offset: None,
+                            reason: format!("event body decode failed: {err}"),
+                        })
+                    })?;
+                if let Some(entry) = history_entry_from_event(id, field, &body) {
+                    entries.push(entry);
+                }
+            }
+            cursor = next_cursor;
+        }
+    }
+
+    entries.sort_by(|a, b| {
+        a.at.cmp(&b.at)
+            .then_with(|| a.by.cmp(&b.by))
+            .then_with(|| a.origin_replica_id.cmp(&b.origin_replica_id))
+            .then_with(|| a.origin_seq.cmp(&b.origin_seq))
+            .then_with(|| a.txn_id.cmp(&b.txn_id))
+    });
+    Ok(entries)
 }
 
 fn show_details_for_store(
@@ -712,6 +843,44 @@ impl Daemon {
         })
     }
 
+    /// Walk the validated WAL for changes to one bead field.
+    pub(in crate::runtime) fn query_field_history(
+        &mut self,
+        repo: &Path,
+        id: &BeadId,
+        field: IssueField,
+        read: ReadConsistency,
+        git_tx: &Sender<GitOp>,
+    ) -> Response {
+        let layout = self.layout().clone();
+        let limits = self.limits().clone();
+        self.with_read_ctx_response(repo, read, git_tx, false, move |ctx| {
+            ctx.state.require_live(id).map_live_err(id)?;
+
+            let namespace = ctx.read.namespace();
+            let origins: Vec<_> = ctx
+                .store
+                .watermarks_applied
+                .origins(namespace)
+                .map(|(origin, watermark)| (*origin, watermark.seq()))
+                .collect();
+            let reader = WalRangeReader::new(
+                layout.store_dir(&ctx.store.meta.store_id()),
+                ctx.store.wal_index.clone(),
+                limits.clone(),
+            );
+            let entries = field_history_from_wal(&reader, &limits, namespace, &origins, id, field)?;
+
+            Ok(ResponsePayload::query(QueryResult::FieldHistory(
+                FieldHistory {
+                    id: id.to_string(),
+                    field,
+                    entries,
+                },
+            )))
+        })
+    }
+
     /// Get sync status for a repo.
     pub(in crate::runtime) fn query_status(
         &mut self,
@@ -1206,12 +1375,20 @@ fn tracker_blockers_for_issue(
 }
 #[cfg(test)]
 mod tests {
-    use super::{Issue, IssueSummary, tracker_issue_from_view};
+    use super::{
+        Issue, IssueSummary, field_value_from_upsert, history_entry_from_event, json_value,
+        tracker_issue_from_view,
+    };
     use super::{dep_cycles_from_state, sort_ready_issues};
     use crate::core::{
         ActorId, Bead, BeadCore, BeadFields, BeadId, BeadType, CanonicalState, Claim, DepKey,
-        DepKind, Dot, IssueStatus, Label, Lww, NamespaceId, Priority, ReplicaId, Stamp, WriteStamp,
+        DepKind, Dot, EventBody, EventKindV1, HlcMax, IssueStatus, Label, Limits, Lww, NamespaceId,
+        NoteAppendV1, NoteId, Priority, ReplicaId, Seq1, Stamp, StoreEpoch, StoreId, StoreIdentity,
+        TxnDeltaV1, TxnId, TxnOpV1, TxnV1, WireBeadPatch, WireNoteV1, WirePatch, WireStamp,
+        WriteStamp,
     };
+    use beads_api::IssueField;
+    use serde_json::Value;
     use uuid::Uuid;
 
     fn issue_summary(id: &str, priority: u8, created_at_ms: u64) -> IssueSummary {
@@ -1258,6 +1435,72 @@ mod tests {
             claim: Lww::new(Claim::default(), stamp.clone()),
         };
         Bead::new(core, fields)
+    }
+
+    #[test]
+    fn field_history_extracts_clear_and_atomic_reopen_reason() {
+        let id = BeadId::parse("bd-history").expect("bead id");
+        let mut cleared = WireBeadPatch::new(id.clone());
+        cleared.design = WirePatch::Clear;
+        assert_eq!(
+            field_value_from_upsert(IssueField::Design, &cleared),
+            Some(Value::Null)
+        );
+        assert_eq!(
+            field_value_from_upsert(IssueField::AcceptanceCriteria, &cleared),
+            None
+        );
+
+        let mut patch = WireBeadPatch::new(id.clone());
+        patch.status = Some(IssueStatus::Todo);
+        patch.closed_on_branch = WirePatch::Clear;
+        let mut delta = TxnDeltaV1::new();
+        delta
+            .insert(TxnOpV1::BeadUpsert(Box::new(patch)))
+            .expect("status patch");
+        delta
+            .insert(TxnOpV1::NoteAppend(NoteAppendV1 {
+                bead_id: id.clone(),
+                note: WireNoteV1 {
+                    id: NoteId::new("reopen-note").expect("note id"),
+                    content: "reopen: terminal state was accidental".to_string(),
+                    author: ActorId::new("alice").expect("actor"),
+                    at: WireStamp(2_000, 3),
+                },
+                lineage: None,
+            }))
+            .expect("reason note");
+        let body = EventBody {
+            envelope_v: 1,
+            store: StoreIdentity::new(StoreId::new(Uuid::from_bytes([1; 16])), StoreEpoch::ZERO),
+            namespace: NamespaceId::core(),
+            origin_replica_id: ReplicaId::new(Uuid::from_bytes([2; 16])),
+            origin_seq: Seq1::from_u64(7).expect("seq"),
+            event_time_ms: 2_000,
+            txn_id: TxnId::new(Uuid::from_bytes([3; 16])),
+            client_request_id: None,
+            trace_id: None,
+            kind: EventKindV1::TxnV1(TxnV1 {
+                hlc_max: HlcMax {
+                    actor_id: ActorId::new("alice").expect("actor"),
+                    physical_ms: 2_000,
+                    logical: 3,
+                },
+                delta,
+            }),
+        }
+        .into_validated(&Limits::default())
+        .expect("validated event");
+
+        let entry =
+            history_entry_from_event(&id, IssueField::Status, &body).expect("status history entry");
+        assert_eq!(entry.value, json_value(&IssueStatus::Todo));
+        assert_eq!(
+            entry.reason.as_deref(),
+            Some("terminal state was accidental")
+        );
+        assert_eq!(entry.at, WriteStamp::new(2_000, 3));
+        assert_eq!(entry.origin_seq, 7);
     }
 
     #[test]

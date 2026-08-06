@@ -321,12 +321,11 @@ impl ParsedMutationRequest {
 
     pub fn parse_reopen(payload: ReopenPayload) -> Result<Self, OpError> {
         let ReopenPayload { id, reason } = payload;
-        let reason = normalize_optional_string(Some(reason)).ok_or_else(|| {
-            OpError::ValidationFailed {
+        let reason =
+            normalize_optional_string(Some(reason)).ok_or_else(|| OpError::ValidationFailed {
                 field: "reason".into(),
                 reason: "reopen reason must not be empty".into(),
-            }
-        })?;
+            })?;
         Ok(ParsedMutationRequest::Reopen { id, reason })
     }
 
@@ -536,9 +535,7 @@ impl MutationEngine {
                 patch,
                 cas,
                 text_mode,
-            } => {
-                self.plan_update(state, id, patch, cas, text_mode)?
-            }
+            } => self.plan_update(state, id, patch, cas, text_mode)?,
             ParsedMutationRequest::AddLabels { id, labels } => {
                 self.plan_add_labels(state, id, labels, dot_alloc, &mut durability)?
             }
@@ -808,12 +805,10 @@ impl MutationEngine {
                 reason: reason.clone(),
                 on_branch: on_branch.clone(),
             }),
-            ParsedMutationRequest::Reopen { id, reason } => {
-                Ok(CanonicalMutationOp::Reopen {
-                    id: id.clone(),
-                    reason: reason.clone(),
-                })
-            }
+            ParsedMutationRequest::Reopen { id, reason } => Ok(CanonicalMutationOp::Reopen {
+                id: id.clone(),
+                reason: reason.clone(),
+            }),
             ParsedMutationRequest::Delete { id, reason } => Ok(CanonicalMutationOp::Delete {
                 id: id.clone(),
                 reason: reason.clone(),
@@ -2979,10 +2974,7 @@ mod tests {
                 _ => None,
             })
             .unwrap();
-        assert_eq!(
-            replace_patch.design,
-            WirePatch::Set("new design".into())
-        );
+        assert_eq!(replace_patch.design, WirePatch::Set("new design".into()));
         assert_eq!(
             replace_patch.acceptance_criteria,
             WirePatch::Set("new acceptance".into())

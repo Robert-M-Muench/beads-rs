@@ -11,8 +11,8 @@ use crate::admin::{
 };
 use crate::deps::{DepCycles, DepEdge};
 use crate::issues::{
-    BlockedIssue, CountResult, DeletedLookup, EpicStatus, Issue, IssueSummary, Note, ReadyResult,
-    StatusOutput, Tombstone,
+    BlockedIssue, CountResult, DeletedLookup, EpicStatus, FieldHistory, Issue, IssueSummary, Note,
+    ReadyResult, StatusOutput, Tombstone,
 };
 use crate::tracker::TrackerIssue;
 use beads_core::BeadRef;
@@ -57,6 +57,9 @@ pub enum QueryResult {
 
     /// Notes for a bead.
     Notes(Vec<Note>),
+
+    /// Journal-backed history for one bead field.
+    FieldHistory(FieldHistory),
 
     /// Issue database status (counts, etc).
     Status(StatusOutput),
