@@ -12,6 +12,7 @@ This document is the canonical dependency policy for internal crate boundaries.
 - `beads-git`
 - `beads-daemon`
 - `beads-daemon-core`
+- `beads-http`
 - `beads-rs`
 
 `beads-bootstrap`, `beads-cli`, `beads-git`, `beads-daemon`, and `beads-daemon-core` are first-class workspace crates.
@@ -39,6 +40,8 @@ Only the directed edges below are allowed:
 - `beads-daemon -> beads-git`
 - `beads-daemon -> beads-daemon-core`
 - `beads-daemon-core -> beads-core`
+- `beads-http -> beads-core`
+- `beads-http -> beads-surface`
 - `beads-rs -> beads-core`
 - `beads-rs -> beads-api`
 - `beads-rs -> beads-bootstrap`
