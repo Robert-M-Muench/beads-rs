@@ -3057,7 +3057,7 @@ mod tests {
     }
 
     #[test]
-    fn tracker_transition_reopens_closed_issue_into_human_review() {
+    fn tracker_transition_cannot_bypass_explicit_reopen() {
         let engine = MutationEngine::new(Limits::default());
         let actor = actor_id("alice");
         let bead_id = BeadId::parse("bd-track").unwrap();
@@ -3082,23 +3082,16 @@ mod tests {
         .unwrap();
         let mut dots = TestDotAllocator::new(ReplicaId::new(Uuid::from_bytes([9u8; 16])));
 
-        let planned = engine
-            .plan(&state, 10, stamped, store, None, req, &mut dots)
-            .unwrap();
-        let (draft, effects) = planned.acknowledge_durability();
-        let ops: Vec<_> = draft.command.raw_delta().iter().collect();
-        let patch = ops
-            .iter()
-            .find_map(|op| match op {
-                TxnOpV1::BeadUpsert(patch) => Some(patch.as_ref()),
-                _ => None,
-            })
-            .expect("bead upsert");
-
-        assert_eq!(effects.dot_meta_sync_boundaries, 0);
-        assert_eq!(patch.status, Some(IssueStatus::HumanReview));
-        assert!(matches!(patch.closed_on_branch, WirePatch::Clear));
-        assert!(!ops.iter().any(|op| matches!(op, TxnOpV1::LabelAdd(_))));
+        let err = match engine.plan(&state, 10, stamped, store, None, req, &mut dots) {
+            Err(err) => err,
+            Ok(_) => panic!("terminal tracker transition must require explicit reopen"),
+        };
+        assert!(matches!(
+            err,
+            OpError::InvalidTransition { from, to }
+                if from == IssueStatus::Done.as_str()
+                    && to == IssueStatus::HumanReview.as_str()
+        ));
     }
 
     #[test]

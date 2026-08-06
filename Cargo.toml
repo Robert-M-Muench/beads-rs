@@ -39,7 +39,7 @@ hex = "0.4"
 bytes = "1"
 
 [workspace.package]
-version = "0.2.0-alpha"
+version = "0.2.0-alpha.1"
 edition = "2024"
 rust-version = "1.91"
 license = "MIT"

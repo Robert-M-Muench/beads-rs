@@ -202,7 +202,7 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "beads-api"
-version = "0.2.0-alpha"
+version = "0.2.0-alpha.1"
 dependencies = [
  "beads-core",
  "serde",
@@ -212,7 +212,7 @@ dependencies = [
 
 [[package]]
 name = "beads-bootstrap"
-version = "0.2.0-alpha"
+version = "0.2.0-alpha.1"
 dependencies = [
  "beads-core",
  "dirs",
@@ -226,7 +226,7 @@ dependencies = [
 
 [[package]]
 name = "beads-cli"
-version = "0.2.0-alpha"
+version = "0.2.0-alpha.1"
 dependencies = [
  "beads-api",
  "beads-core",
@@ -247,7 +247,7 @@ dependencies = [
 
 [[package]]
 name = "beads-core"
-version = "0.2.0-alpha"
+version = "0.2.0-alpha.1"
 dependencies = [
  "beads-macros",
  "bytes",
@@ -264,7 +264,7 @@ dependencies = [
 
 [[package]]
 name = "beads-daemon"
-version = "0.2.0-alpha"
+version = "0.2.0-alpha.1"
 dependencies = [
  "beads-api",
  "beads-bootstrap",
@@ -306,7 +306,7 @@ dependencies = [
 
 [[package]]
 name = "beads-daemon-core"
-version = "0.2.0-alpha"
+version = "0.2.0-alpha.1"
 dependencies = [
  "beads-core",
  "bytes",
@@ -327,7 +327,7 @@ dependencies = [
 
 [[package]]
 name = "beads-git"
-version = "0.2.0-alpha"
+version = "0.2.0-alpha.1"
 dependencies = [
  "beads-bootstrap",
  "beads-core",
@@ -350,7 +350,7 @@ dependencies = [
 
 [[package]]
 name = "beads-http"
-version = "0.2.0-alpha"
+version = "0.2.0-alpha.1"
 dependencies = [
  "axum",
  "beads-core",
@@ -366,11 +366,11 @@ dependencies = [
 
 [[package]]
 name = "beads-macros"
-version = "0.2.0-alpha"
+version = "0.2.0-alpha.1"
 
 [[package]]
 name = "beads-rs"
-version = "0.2.0-alpha"
+version = "0.2.0-alpha.1"
 dependencies = [
  "assert_cmd",
  "beads-api",
@@ -421,7 +421,7 @@ dependencies = [
 
 [[package]]
 name = "beads-rs-fuzz"
-version = "0.2.0-alpha"
+version = "0.2.0-alpha.1"
 dependencies = [
  "beads-core",
  "beads-daemon-core",
@@ -431,7 +431,7 @@ dependencies = [
 
 [[package]]
 name = "beads-surface"
-version = "0.2.0-alpha"
+version = "0.2.0-alpha.1"
 dependencies = [
  "beads-api",
  "beads-core",
@@ -445,7 +445,7 @@ dependencies = [
 
 [[package]]
 name = "beads_stateright_models"
-version = "0.2.0-alpha"
+version = "0.2.0-alpha.1"
 dependencies = [
  "beads-core",
  "beads-daemon-core",
