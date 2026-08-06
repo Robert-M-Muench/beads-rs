@@ -7,6 +7,18 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::ops::BeadPatch;
 use crate::query::Filters;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextUpdateMode {
+    /// Set only when the current field is empty.
+    #[default]
+    SetIfEmpty,
+    /// Replace any current field value.
+    Replace,
+    /// Append after any current field value.
+    Append,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EmptyPayload {}
 
@@ -60,6 +72,8 @@ pub struct UpdatePayload {
     pub patch: BeadPatch,
     #[serde(default)]
     pub cas: Option<String>,
+    #[serde(default)]
+    pub text_mode: TextUpdateMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -323,6 +337,24 @@ mod tests {
             msg.contains("closed") || msg.contains("unknown variant"),
             "unexpected error: {msg}"
         );
+    }
+
+    #[test]
+    fn update_payload_defaults_to_protected_text_mode() {
+        let decoded: UpdatePayload = serde_json::from_value(json!({
+            "id": "bd-xyz123",
+            "patch": { "design": "new" }
+        }))
+        .unwrap();
+        assert_eq!(decoded.text_mode, TextUpdateMode::SetIfEmpty);
+
+        let appended: UpdatePayload = serde_json::from_value(json!({
+            "id": "bd-xyz123",
+            "patch": { "acceptance_criteria": "more" },
+            "text_mode": "append"
+        }))
+        .unwrap();
+        assert_eq!(appended.text_mode, TextUpdateMode::Append);
     }
 
     #[test]

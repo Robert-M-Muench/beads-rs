@@ -15,7 +15,7 @@ use beads_surface::ipc::{InitPayload, IpcError, RepoCtx, Request, Response, send
 const CREATE_AFTER_HELP: &str = "Examples:\n  bd create \"Write CLI docs\" -p1 -t task\n  printf 'Detailed context\\n' | bd create \"Fix parser\" --stdin\n  bd create \"Refactor parser\" --body-file notes.md --design-file plan.md\n  bd create --file backlog.md";
 const SHOW_AFTER_HELP: &str = "Examples:\n  bd show beads-rs-k8u3\n  bd show --id beads-rs-k8u3 --id beads-rs-k8u3.5\n  bd show --current\n  bd show beads-rs-k8u3 --refs\n  bd show beads-rs-k8u3 --children\n  bd show beads-rs-k8u3 --short\n  bd help --advanced show";
 const LIST_AFTER_HELP: &str = "Examples:\n  bd list\n  bd list --all --long\n  bd list --parent beads-rs-k8u3 --tree\n  bd list --status todo --label cli -L\n  bd list --sort priority:desc";
-const UPDATE_AFTER_HELP: &str = "Examples:\n  bd update beads-rs-k8u3 --status in_progress --priority 1\n  printf 'Refined description\\n' | bd update beads-rs-k8u3 --stdin\n  bd update beads-rs-k8u3 --body-file notes.md --design-file design.md\n  bd update beads-rs-k8u3 --add-label cli --notes \"help UX pass\"";
+const UPDATE_AFTER_HELP: &str = "Examples:\n  bd update beads-rs-k8u3 --status in_progress --priority 1\n  printf 'Refined description\\n' | bd update beads-rs-k8u3 --stdin\n  bd update beads-rs-k8u3 --design-file design.md --replace\n  bd update beads-rs-k8u3 --acceptance 'Another case' --append\n  bd update beads-rs-k8u3 --add-label cli --notes \"help UX pass\"";
 const DEP_AFTER_HELP: &str = "Examples:\n  bd dep add beads-rs-k8u3.2 beads-rs-k8u3.9\n  bd dep beads-rs-k8u3.9 --blocks beads-rs-k8u3.2\n  bd dep beads-rs-k8u3.2 --depends-on beads-rs-k8u3.9\n  bd dep tree beads-rs-k8u3";
 const PRIME_AFTER_HELP: &str = "Examples:\n  bd prime\n  bd prime --mcp\n  bd prime --full --stealth\n  bd prime --export > /tmp/beads-context.txt";
 const SETUP_AFTER_HELP: &str = "Examples:\n  bd setup list\n  bd setup claude\n  bd setup cursor --check\n  bd setup codex\n  bd setup windsurf --remove";
@@ -680,5 +680,28 @@ mod tests {
             }
             other => panic!("expected update command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_update_accepts_explicit_text_modes() {
+        let replace = parse_from([
+            "bd",
+            "update",
+            "beads-rs-k8u3",
+            "--design",
+            "new",
+            "--replace",
+        ]);
+        assert!(matches!(replace.command, Command::Update(args) if args.replace && !args.append));
+
+        let append = parse_from([
+            "bd",
+            "update",
+            "beads-rs-k8u3",
+            "--acceptance",
+            "new",
+            "--append",
+        ]);
+        assert!(matches!(append.command, Command::Update(args) if args.append && !args.replace));
     }
 }

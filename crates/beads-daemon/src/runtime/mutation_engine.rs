@@ -22,11 +22,11 @@ use crate::core::{
 use crate::remote::RemoteUrl;
 use crate::runtime::ipc::{
     AddNotePayload, ClaimPayload, ClosePayload, CreatePayload, DeletePayload, DepPayload,
-    IdPayload, LabelsPayload, LeasePayload, ParentPayload, ReopenPayload, TrackerCommentPayload,
-    TrackerTransitionPayload, UpdatePayload,
+    IdPayload, LabelsPayload, LeasePayload, ParentPayload, ReopenPayload, TextUpdateMode,
+    TrackerCommentPayload, TrackerTransitionPayload, UpdatePayload,
 };
 use crate::runtime::wal::record::RECORD_HEADER_BASE_LEN;
-use beads_surface::ops::Patch;
+use beads_surface::ops::{BeadPatch, Patch};
 
 #[derive(Clone, Debug)]
 pub struct MutationContext {
@@ -160,6 +160,7 @@ pub enum ParsedMutationRequest {
         id: BeadId,
         patch: ValidatedSurfaceBeadPatch,
         cas: Option<String>,
+        text_mode: TextUpdateMode,
     },
     AddLabels {
         id: BeadId,
@@ -273,9 +274,19 @@ impl ParsedMutationRequest {
     }
 
     pub fn parse_update(payload: UpdatePayload) -> Result<Self, OpError> {
-        let UpdatePayload { id, patch, cas } = payload;
+        let UpdatePayload {
+            id,
+            patch,
+            cas,
+            text_mode,
+        } = payload;
         let patch = ValidatedSurfaceBeadPatch::try_from(patch)?;
-        Ok(ParsedMutationRequest::Update { id, patch, cas })
+        Ok(ParsedMutationRequest::Update {
+            id,
+            patch,
+            cas,
+            text_mode,
+        })
     }
 
     pub fn parse_add_labels(payload: LabelsPayload) -> Result<Self, OpError> {
@@ -520,8 +531,13 @@ impl MutationEngine {
                 labels,
                 dependencies,
             )?,
-            ParsedMutationRequest::Update { id, patch, cas } => {
-                self.plan_update(state, id, patch, cas)?
+            ParsedMutationRequest::Update {
+                id,
+                patch,
+                cas,
+                text_mode,
+            } => {
+                self.plan_update(state, id, patch, cas, text_mode)?
             }
             ParsedMutationRequest::AddLabels { id, labels } => {
                 self.plan_add_labels(state, id, labels, dot_alloc, &mut durability)?
@@ -755,12 +771,18 @@ impl MutationEngine {
                     dependencies: canonical_deps,
                 })
             }
-            ParsedMutationRequest::Update { id, patch, cas } => {
+            ParsedMutationRequest::Update {
+                id,
+                patch,
+                cas,
+                text_mode,
+            } => {
                 let (_, canonical_patch) = normalize_patch(id, patch)?;
                 Ok(CanonicalMutationOp::Update {
                     id: id.clone(),
                     patch: canonical_patch,
                     cas: cas.clone(),
+                    text_mode: *text_mode,
                 })
             }
             ParsedMutationRequest::AddLabels { id, labels } => Ok(CanonicalMutationOp::AddLabels {
@@ -1118,6 +1140,7 @@ impl MutationEngine {
         id: BeadId,
         patch: ValidatedSurfaceBeadPatch,
         cas: Option<String>,
+        text_mode: TextUpdateMode,
     ) -> Result<PlannedDelta, OpError> {
         let bead = state.require_live(&id).map_live_err(&id)?;
 
@@ -1136,7 +1159,10 @@ impl MutationEngine {
             }
         }
 
-        let (wire_patch, canonical_patch) = normalize_patch(&id, &patch)?;
+        let (_, canonical_patch) = normalize_patch(&id, &patch)?;
+        let resolved_patch = resolve_protected_text_patch(bead, patch.as_ref(), text_mode)?;
+        let resolved_patch = ValidatedSurfaceBeadPatch::try_from(resolved_patch)?;
+        let (wire_patch, _) = normalize_patch(&id, &resolved_patch)?;
 
         let mut delta = TxnDeltaV1::new();
         insert_bead_upsert(&mut delta, wire_patch)?;
@@ -1145,6 +1171,7 @@ impl MutationEngine {
             id,
             patch: canonical_patch,
             cas,
+            text_mode,
         };
 
         Ok(PlannedDelta { delta, canonical })
@@ -1859,6 +1886,7 @@ enum CanonicalMutationOp {
         patch: CanonicalBeadPatch,
         #[serde(skip_serializing_if = "Option::is_none")]
         cas: Option<String>,
+        text_mode: TextUpdateMode,
     },
     AddLabels {
         id: BeadId,
@@ -2228,6 +2256,64 @@ fn normalize_patch(
     };
 
     Ok((wire, canonical))
+}
+
+fn resolve_protected_text_patch(
+    bead: &Bead,
+    requested: &BeadPatch,
+    mode: TextUpdateMode,
+) -> Result<BeadPatch, OpError> {
+    let mut resolved = requested.clone();
+    resolved.design = resolve_protected_text_field(
+        "design",
+        bead.fields.design.value.as_deref(),
+        &requested.design,
+        mode,
+    )?;
+    resolved.acceptance_criteria = resolve_protected_text_field(
+        "acceptance_criteria",
+        bead.fields.acceptance_criteria.value.as_deref(),
+        &requested.acceptance_criteria,
+        mode,
+    )?;
+    Ok(resolved)
+}
+
+fn resolve_protected_text_field(
+    field: &str,
+    current: Option<&str>,
+    requested: &Patch<String>,
+    mode: TextUpdateMode,
+) -> Result<Patch<String>, OpError> {
+    let current_nonempty = current.is_some_and(|value| !value.trim().is_empty());
+    match (mode, requested) {
+        (_, Patch::Keep) => Ok(Patch::Keep),
+        (TextUpdateMode::SetIfEmpty, Patch::Set(_)) if current_nonempty => {
+            Err(OpError::ValidationFailed {
+                field: field.into(),
+                reason: "field already contains text; use --replace or --append".into(),
+            })
+        }
+        (TextUpdateMode::SetIfEmpty, Patch::Clear) if current_nonempty => {
+            Err(OpError::ValidationFailed {
+                field: field.into(),
+                reason: "field already contains text; use --replace to clear it".into(),
+            })
+        }
+        (TextUpdateMode::SetIfEmpty | TextUpdateMode::Replace, patch) => Ok(patch.clone()),
+        (TextUpdateMode::Append, Patch::Clear) => Err(OpError::ValidationFailed {
+            field: field.into(),
+            reason: "--append requires text rather than clearing the field".into(),
+        }),
+        (TextUpdateMode::Append, Patch::Set(value)) => {
+            let appended = match current.filter(|current| !current.trim().is_empty()) {
+                Some(current) if value.is_empty() => current.to_string(),
+                Some(current) => format!("{current}\n\n{value}"),
+                None => value.clone(),
+            };
+            Ok(Patch::Set(appended))
+        }
+    }
 }
 
 fn patch_to_wire(patch: &Patch<String>) -> WirePatch<String> {
@@ -2790,7 +2876,13 @@ mod tests {
             })
             .unwrap();
             let update = engine
-                .plan_update(&state, bead_id.clone(), patch, None)
+                .plan_update(
+                    &state,
+                    bead_id.clone(),
+                    patch,
+                    None,
+                    TextUpdateMode::SetIfEmpty,
+                )
                 .err()
                 .expect("terminal update transition must refuse");
             assert!(matches!(update, OpError::InvalidTransition { .. }));
@@ -2835,6 +2927,92 @@ mod tests {
         }
         assert!(saw_status);
         assert!(saw_reason);
+    }
+
+    #[test]
+    fn update_design_and_acceptance_require_explicit_modes() {
+        let engine = MutationEngine::new(Limits::default());
+        let actor = actor_id("alice");
+        let bead_id = BeadId::parse("bd-text").unwrap();
+        let mut bead = make_bead(bead_id.as_str(), &actor);
+        bead.fields.design = Lww::new(Some("old design".into()), make_stamp(10, &actor));
+        bead.fields.acceptance_criteria =
+            Lww::new(Some("old acceptance".into()), make_stamp(10, &actor));
+        let mut state = CanonicalState::new();
+        state.insert(bead).unwrap();
+
+        let requested = BeadPatch {
+            design: Patch::Set("new design".into()),
+            acceptance_criteria: Patch::Set("new acceptance".into()),
+            ..BeadPatch::default()
+        };
+        let guarded = engine
+            .plan_update(
+                &state,
+                bead_id.clone(),
+                ValidatedSurfaceBeadPatch::try_from(requested.clone()).unwrap(),
+                None,
+                TextUpdateMode::SetIfEmpty,
+            )
+            .err()
+            .expect("silent replacement must refuse");
+        assert!(matches!(
+            guarded,
+            OpError::ValidationFailed { ref field, ref reason }
+                if field == "design" && reason.contains("--replace or --append")
+        ));
+
+        let replaced = engine
+            .plan_update(
+                &state,
+                bead_id.clone(),
+                ValidatedSurfaceBeadPatch::try_from(requested.clone()).unwrap(),
+                None,
+                TextUpdateMode::Replace,
+            )
+            .unwrap();
+        let replace_patch = replaced
+            .delta
+            .iter()
+            .find_map(|op| match op {
+                TxnOpV1::BeadUpsert(patch) => Some(patch.as_ref()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            replace_patch.design,
+            WirePatch::Set("new design".into())
+        );
+        assert_eq!(
+            replace_patch.acceptance_criteria,
+            WirePatch::Set("new acceptance".into())
+        );
+
+        let appended = engine
+            .plan_update(
+                &state,
+                bead_id,
+                ValidatedSurfaceBeadPatch::try_from(requested).unwrap(),
+                None,
+                TextUpdateMode::Append,
+            )
+            .unwrap();
+        let append_patch = appended
+            .delta
+            .iter()
+            .find_map(|op| match op {
+                TxnOpV1::BeadUpsert(patch) => Some(patch.as_ref()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            append_patch.design,
+            WirePatch::Set("old design\n\nnew design".into())
+        );
+        assert_eq!(
+            append_patch.acceptance_criteria,
+            WirePatch::Set("old acceptance\n\nnew acceptance".into())
+        );
     }
 
     #[test]
@@ -3042,6 +3220,7 @@ mod tests {
             id: BeadId::parse("bd-required").unwrap(),
             patch,
             cas: None,
+            text_mode: TextUpdateMode::SetIfEmpty,
         })
         .unwrap_err();
         assert!(matches!(
@@ -3056,6 +3235,7 @@ mod tests {
             id: BeadId::parse("bd-required").unwrap(),
             patch,
             cas: None,
+            text_mode: TextUpdateMode::SetIfEmpty,
         })
         .unwrap_err();
         assert!(matches!(
@@ -3073,6 +3253,7 @@ mod tests {
             id: BeadId::parse("bd-required").unwrap(),
             patch,
             cas: None,
+            text_mode: TextUpdateMode::SetIfEmpty,
         })
         .unwrap_err();
         assert!(matches!(
@@ -3087,6 +3268,7 @@ mod tests {
             id: BeadId::parse("bd-required").unwrap(),
             patch,
             cas: None,
+            text_mode: TextUpdateMode::SetIfEmpty,
         })
         .unwrap_err();
         assert!(matches!(
@@ -3119,6 +3301,7 @@ mod tests {
             id: bead_id.clone(),
             patch,
             cas: None,
+            text_mode: TextUpdateMode::SetIfEmpty,
         })
         .unwrap();
         let mut dots = TestDotAllocator::new(ReplicaId::new(Uuid::from_bytes([7u8; 16])));

@@ -11,7 +11,7 @@ use beads_api::QueryResult;
 use beads_core::{BeadType, DepKind, IssueStatus, NamespaceId, Priority};
 use beads_surface::ipc::{
     AddNotePayload, ClaimPayload, ClosePayload, DepPayload, IdPayload, LabelsPayload,
-    ParentPayload, Request, ResponsePayload, UpdatePayload,
+    ParentPayload, Request, ResponsePayload, TextUpdateMode, UpdatePayload,
 };
 use beads_surface::ops::{BeadPatch, BeadPatchValidationError, Patch};
 
@@ -54,7 +54,7 @@ pub struct UpdateArgs {
     #[arg(long)]
     pub stdin: bool,
 
-    /// Replace the design section.
+    /// Set the design section; use --replace or --append when it is nonempty.
     #[arg(long, allow_hyphen_values = true)]
     pub design: Option<String>,
 
@@ -62,13 +62,21 @@ pub struct UpdateArgs {
     #[arg(long = "design-file", value_name = "PATH")]
     pub design_file: Option<std::path::PathBuf>,
 
-    /// Replace the acceptance criteria section.
+    /// Set acceptance criteria; use --replace or --append when nonempty.
     #[arg(
         long = "acceptance",
         alias = "acceptance-criteria",
         allow_hyphen_values = true
     )]
     pub acceptance: Option<String>,
+
+    /// Replace an existing design or acceptance section.
+    #[arg(long, conflicts_with = "append")]
+    pub replace: bool,
+
+    /// Append to an existing design or acceptance section.
+    #[arg(long, conflicts_with = "replace")]
+    pub append: bool,
 
     /// External reference (e.g., "gh-9", "jira-ABC").
     #[arg(long = "external-ref")]
@@ -250,6 +258,24 @@ pub fn handle(ctx: &CliRuntimeCtx, mut args: UpdateArgs) -> CommandResult<()> {
         patch.status = Patch::Set(status);
     }
 
+    let text_mode = if args.replace {
+        TextUpdateMode::Replace
+    } else if args.append {
+        TextUpdateMode::Append
+    } else {
+        TextUpdateMode::SetIfEmpty
+    };
+    if text_mode != TextUpdateMode::SetIfEmpty
+        && patch.design.is_keep()
+        && patch.acceptance_criteria.is_keep()
+    {
+        return Err(validation_error(
+            "text_mode",
+            "--replace/--append requires --design, --design-file, or --acceptance",
+        )
+        .into());
+    }
+
     if !patch.is_empty() {
         patch
             .validate_for_update()
@@ -260,6 +286,7 @@ pub fn handle(ctx: &CliRuntimeCtx, mut args: UpdateArgs) -> CommandResult<()> {
                 id: id.clone(),
                 patch,
                 cas: None,
+                text_mode,
             },
         };
         let _ = send(&req)?;
@@ -468,6 +495,8 @@ mod tests {
                 design: None,
                 design_file: Some(std::path::PathBuf::from("-")),
                 acceptance: None,
+                replace: false,
+                append: false,
                 external_ref: None,
                 estimate: None,
                 status: None,
@@ -508,6 +537,8 @@ mod tests {
                 design: None,
                 design_file: None,
                 acceptance: None,
+                replace: false,
+                append: false,
                 external_ref: None,
                 estimate: None,
                 status: Some("done".to_string()),

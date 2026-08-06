@@ -96,6 +96,7 @@ pub fn update_request(id: impl AsRef<str>, patch: BeadPatch) -> MutationPayload 
         id: parse_bead_id(id),
         patch,
         cas: None,
+        text_mode: beads_surface::ipc::TextUpdateMode::SetIfEmpty,
     })
 }
 
