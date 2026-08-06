@@ -374,7 +374,7 @@ pub(super) fn op_result_from_delta(
             Ok(OpResult::Updated { id: id.clone() })
         }
         ParsedMutationRequest::Close { id, .. } => Ok(OpResult::Closed { id: id.clone() }),
-        ParsedMutationRequest::Reopen { id } => Ok(OpResult::Reopened { id: id.clone() }),
+        ParsedMutationRequest::Reopen { id, .. } => Ok(OpResult::Reopened { id: id.clone() }),
         ParsedMutationRequest::Delete { id, .. } => Ok(OpResult::Deleted { id: id.clone() }),
         ParsedMutationRequest::AddDep { from, to, .. } => Ok(OpResult::DepAdded {
             from: from.clone(),

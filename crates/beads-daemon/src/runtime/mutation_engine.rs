@@ -22,7 +22,7 @@ use crate::core::{
 use crate::remote::RemoteUrl;
 use crate::runtime::ipc::{
     AddNotePayload, ClaimPayload, ClosePayload, CreatePayload, DeletePayload, DepPayload,
-    IdPayload, LabelsPayload, LeasePayload, ParentPayload, TrackerCommentPayload,
+    IdPayload, LabelsPayload, LeasePayload, ParentPayload, ReopenPayload, TrackerCommentPayload,
     TrackerTransitionPayload, UpdatePayload,
 };
 use crate::runtime::wal::record::RECORD_HEADER_BASE_LEN;
@@ -180,6 +180,7 @@ pub enum ParsedMutationRequest {
     },
     Reopen {
         id: BeadId,
+        reason: String,
     },
     Delete {
         id: BeadId,
@@ -307,9 +308,15 @@ impl ParsedMutationRequest {
         })
     }
 
-    pub fn parse_reopen(payload: IdPayload) -> Result<Self, OpError> {
-        let IdPayload { id } = payload;
-        Ok(ParsedMutationRequest::Reopen { id })
+    pub fn parse_reopen(payload: ReopenPayload) -> Result<Self, OpError> {
+        let ReopenPayload { id, reason } = payload;
+        let reason = normalize_optional_string(Some(reason)).ok_or_else(|| {
+            OpError::ValidationFailed {
+                field: "reason".into(),
+                reason: "reopen reason must not be empty".into(),
+            }
+        })?;
+        Ok(ParsedMutationRequest::Reopen { id, reason })
     }
 
     pub fn parse_delete(payload: DeletePayload) -> Result<Self, OpError> {
@@ -537,7 +544,9 @@ impl MutationEngine {
                 reason,
                 on_branch,
             } => self.plan_close(state, id, reason, on_branch)?,
-            ParsedMutationRequest::Reopen { id } => self.plan_reopen(state, id)?,
+            ParsedMutationRequest::Reopen { id, reason } => {
+                self.plan_reopen(state, &stamp, id, reason)?
+            }
             ParsedMutationRequest::Delete { id, reason } => {
                 self.plan_delete(state, &stamp, id, reason)?
             }
@@ -777,8 +786,11 @@ impl MutationEngine {
                 reason: reason.clone(),
                 on_branch: on_branch.clone(),
             }),
-            ParsedMutationRequest::Reopen { id } => {
-                Ok(CanonicalMutationOp::Reopen { id: id.clone() })
+            ParsedMutationRequest::Reopen { id, reason } => {
+                Ok(CanonicalMutationOp::Reopen {
+                    id: id.clone(),
+                    reason: reason.clone(),
+                })
             }
             ParsedMutationRequest::Delete { id, reason } => Ok(CanonicalMutationOp::Delete {
                 id: id.clone(),
@@ -1107,7 +1119,11 @@ impl MutationEngine {
         patch: ValidatedSurfaceBeadPatch,
         cas: Option<String>,
     ) -> Result<PlannedDelta, OpError> {
-        state.require_live(&id).map_live_err(&id)?;
+        let bead = state.require_live(&id).map_live_err(&id)?;
+
+        if let Patch::Set(status) = &patch.status {
+            refuse_terminal_reactivation(bead.fields.status.value, *status)?;
+        }
 
         if let Some(expected) = cas.as_ref() {
             let view = state.bead_view(&id).expect("live bead should have view");
@@ -1235,7 +1251,13 @@ impl MutationEngine {
         Ok(PlannedDelta { delta, canonical })
     }
 
-    fn plan_reopen(&self, state: &CanonicalState, id: BeadId) -> Result<PlannedDelta, OpError> {
+    fn plan_reopen(
+        &self,
+        state: &CanonicalState,
+        stamp: &Stamp,
+        id: BeadId,
+        reason: String,
+    ) -> Result<PlannedDelta, OpError> {
         let bead = state.require_live(&id).map_live_err(&id)?;
         if !bead.fields.status.value.is_terminal() {
             let from_status = bead.fields.status.value.bucket_str().to_string();
@@ -1248,11 +1270,28 @@ impl MutationEngine {
         let mut patch = BeadPatchWireV1::new(id.clone());
         patch.status = Some(IssueStatus::Todo);
         patch.closed_on_branch = WirePatch::Clear;
+        patch.assignee = WirePatch::Clear;
+        patch.assignee_expires = WirePatch::Clear;
 
         let mut delta = TxnDeltaV1::new();
         insert_bead_upsert(&mut delta, patch)?;
+        let note_content = format!("reopen: {reason}");
+        enforce_note_limit(&note_content, &self.limits)?;
+        let note = WireNoteV1 {
+            id: generate_unique_note_id(state, &id, NoteId::generate),
+            content: note_content,
+            author: stamp.by.clone(),
+            at: WireStamp::from(&stamp.at),
+        };
+        delta
+            .insert(TxnOpV1::NoteAppend(NoteAppendV1 {
+                bead_id: id.clone(),
+                note,
+                lineage: Some(bead.core.created().clone().into()),
+            }))
+            .map_err(delta_error_to_op)?;
 
-        let canonical = CanonicalMutationOp::Reopen { id };
+        let canonical = CanonicalMutationOp::Reopen { id, reason };
 
         Ok(PlannedDelta { delta, canonical })
     }
@@ -1615,6 +1654,7 @@ impl MutationEngine {
                 reason: format!("bead already has status {}", status.as_str()),
             });
         }
+        refuse_terminal_reactivation(current_state, status)?;
 
         let plan = status_transition_plan(status)?;
 
@@ -1658,6 +1698,13 @@ impl MutationEngine {
         lease_secs: u64,
     ) -> Result<PlannedDelta, OpError> {
         let bead = state.require_live(&id).map_live_err(&id)?;
+
+        if bead.fields.status.value.is_terminal() {
+            return Err(OpError::InvalidTransition {
+                from: bead.fields.status.value.as_str().into(),
+                to: IssueStatus::InProgress.as_str().into(),
+            });
+        }
 
         if let crate::core::Claim::Claimed {
             assignee,
@@ -1830,6 +1877,7 @@ enum CanonicalMutationOp {
     },
     Reopen {
         id: BeadId,
+        reason: String,
     },
     Delete {
         id: BeadId,
@@ -1928,6 +1976,19 @@ fn normalize_optional_string(value: Option<String>) -> Option<String> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
+}
+
+fn refuse_terminal_reactivation(
+    current: IssueStatus,
+    requested: IssueStatus,
+) -> Result<(), OpError> {
+    if current.is_terminal() && !requested.is_terminal() {
+        return Err(OpError::InvalidTransition {
+            from: current.as_str().into(),
+            to: requested.as_str().into(),
+        });
+    }
+    Ok(())
 }
 
 fn normalize_assignee(value: Option<String>, actor: &ActorId) -> Result<Option<ActorId>, OpError> {
@@ -2682,6 +2743,98 @@ mod tests {
         assert_eq!(patch.status, Some(IssueStatus::InProgress));
         assert!(matches!(patch.assignee, WirePatch::Set(_)));
         assert!(matches!(patch.closed_on_branch, WirePatch::Clear));
+    }
+
+    #[test]
+    fn terminal_beads_refuse_claim_and_non_reopen_reactivation() {
+        let engine = MutationEngine::new(Limits::default());
+        let actor = actor_id("alice");
+        let bead_id = BeadId::parse("bd-terminal").unwrap();
+
+        for terminal in [
+            IssueStatus::Done,
+            IssueStatus::Cancelled,
+            IssueStatus::Duplicate,
+        ] {
+            let mut bead = make_bead(bead_id.as_str(), &actor);
+            bead.fields.status = Lww::new(terminal, make_stamp(10, &actor));
+            let mut state = CanonicalState::new();
+            state.insert(bead).unwrap();
+
+            let claim = engine
+                .plan_claim(&state, &make_stamp(20, &actor), 20, bead_id.clone(), 60)
+                .err()
+                .expect("terminal claim must refuse");
+            assert!(matches!(
+                claim,
+                OpError::InvalidTransition { ref from, ref to }
+                    if from == terminal.as_str() && to == IssueStatus::InProgress.as_str()
+            ));
+
+            let tracker = engine
+                .plan_tracker_transition(
+                    &state,
+                    &make_stamp(20, &actor),
+                    bead_id.clone(),
+                    IssueStatus::HumanReview,
+                    &mut TestDotAllocator::new(ReplicaId::new(Uuid::from_bytes([4u8; 16]))),
+                    &mut PendingPlanningDurabilityEffects::default(),
+                )
+                .err()
+                .expect("terminal tracker transition must refuse");
+            assert!(matches!(tracker, OpError::InvalidTransition { .. }));
+
+            let patch = ValidatedSurfaceBeadPatch::try_from(BeadPatch {
+                status: Patch::Set(IssueStatus::Todo),
+                ..BeadPatch::default()
+            })
+            .unwrap();
+            let update = engine
+                .plan_update(&state, bead_id.clone(), patch, None)
+                .err()
+                .expect("terminal update transition must refuse");
+            assert!(matches!(update, OpError::InvalidTransition { .. }));
+        }
+    }
+
+    #[test]
+    fn reopen_is_atomic_with_reason_provenance() {
+        let engine = MutationEngine::new(Limits::default());
+        let actor = actor_id("alice");
+        let bead_id = BeadId::parse("bd-terminal").unwrap();
+        let mut bead = make_bead(bead_id.as_str(), &actor);
+        bead.fields.status = Lww::new(IssueStatus::Done, make_stamp(10, &actor));
+        let mut state = CanonicalState::new();
+        state.insert(bead).unwrap();
+
+        let planned = engine
+            .plan_reopen(
+                &state,
+                &make_stamp(20, &actor),
+                bead_id.clone(),
+                "new evidence".to_string(),
+            )
+            .unwrap();
+        let mut saw_status = false;
+        let mut saw_reason = false;
+        for op in planned.delta.iter() {
+            match op {
+                TxnOpV1::BeadUpsert(patch) => {
+                    saw_status = patch.status == Some(IssueStatus::Todo)
+                        && matches!(patch.assignee, WirePatch::Clear)
+                        && matches!(patch.assignee_expires, WirePatch::Clear);
+                }
+                TxnOpV1::NoteAppend(note) => {
+                    saw_reason = note.bead_id == bead_id
+                        && note.note.content == "reopen: new evidence"
+                        && note.note.author == actor
+                        && WriteStamp::from(note.note.at) == WriteStamp::new(20, 0);
+                }
+                _ => {}
+            }
+        }
+        assert!(saw_status);
+        assert!(saw_reason);
     }
 
     #[test]

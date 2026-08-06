@@ -854,7 +854,10 @@ fn test_reopen_closed() {
         .stdout(predicate::str::contains("\"status\": \"Done\""));
 
     // Reopen it
-    repo.bd().args(["reopen", id]).assert().success();
+    repo.bd()
+        .args(["reopen", id, "--reason=verification found more work"])
+        .assert()
+        .success();
 
     repo.bd()
         .args(["show", id, "--json"])
@@ -1645,7 +1648,7 @@ fn test_error_handling_invalid_transitions() {
 
     // Can't reopen an already open issue
     repo.bd()
-        .args(["reopen", id])
+        .args(["reopen", id, "--reason=invalid transition check"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("invalid"));
@@ -2848,7 +2851,10 @@ fn test_double_reopen() {
     let id = cli_issue_id_from_output(&output);
 
     // Try to reopen an issue that was never closed
-    let result = repo.bd().args(["reopen", &id]).assert();
+    let result = repo
+        .bd()
+        .args(["reopen", &id, "--reason=invalid transition check"])
+        .assert();
     let output = result.get_output();
 
     if !output.status.success() {
@@ -3335,21 +3341,17 @@ fn test_claim_closed_issue() {
 
     repo.bd().args(["close", &id]).assert().success();
 
-    // Try to claim closed issue
-    let result = repo.bd().args(["claim", &id]).assert();
-    let output = result.get_output();
+    repo.bd()
+        .args(["claim", &id, "--json"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid transition"));
 
-    // Claiming a closed issue is probably wrong
-    if output.status.success() {
-        println!("NOTE: Can claim closed issue - may be intentional");
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains("closed") || stderr.contains("workflow"),
-            "Should mention issue is closed: {}",
-            stderr
-        );
-    }
+    repo.bd()
+        .args(["show", &id, "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"status\": \"Done\""));
 }
 
 #[cfg(feature = "slow-tests")]

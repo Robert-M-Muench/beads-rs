@@ -1,5 +1,5 @@
 use beads_surface::OpResult;
-use beads_surface::ipc::{IdPayload, Request, ResponsePayload};
+use beads_surface::ipc::{ReopenPayload, Request, ResponsePayload};
 use clap::Args;
 
 use super::{CommandResult, print_ok};
@@ -10,13 +10,20 @@ use crate::validation::normalize_bead_id;
 #[derive(Args, Debug)]
 pub struct ReopenArgs {
     pub id: String,
+
+    /// Why this terminal bead is being reopened.
+    #[arg(long, allow_hyphen_values = true)]
+    pub reason: String,
 }
 
 pub fn handle(ctx: &CliRuntimeCtx, args: ReopenArgs) -> CommandResult<()> {
     let id = normalize_bead_id(&args.id)?;
     let req = Request::Reopen {
         ctx: ctx.mutation_ctx(),
-        payload: IdPayload { id },
+        payload: ReopenPayload {
+            id,
+            reason: args.reason,
+        },
     };
     let ok = send(&req)?;
     if ctx.json {

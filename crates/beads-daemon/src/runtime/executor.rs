@@ -21,8 +21,9 @@ use super::durability_coordinator::{
 use super::git_worker::GitOp;
 use super::ipc::{
     AddNotePayload, ClaimPayload, ClosePayload, CreatePayload, DeletePayload, DepPayload,
-    IdPayload, LabelsPayload, LeasePayload, MutationMeta, OpResponse, ParentPayload, Response,
-    ResponseExt, ResponsePayload, TrackerCommentPayload, TrackerTransitionPayload, UpdatePayload,
+    IdPayload, LabelsPayload, LeasePayload, MutationMeta, OpResponse, ParentPayload, ReopenPayload,
+    Response, ResponseExt, ResponsePayload, TrackerCommentPayload, TrackerTransitionPayload,
+    UpdatePayload,
 };
 use super::mutation_engine::{
     DotAllocator, EventDraft, IdContext, MutationContext, MutationEngine, ParsedMutationRequest,
@@ -659,7 +660,7 @@ impl Daemon {
         &mut self,
         repo: &Path,
         meta: MutationMeta,
-        payload: IdPayload,
+        payload: ReopenPayload,
         git_tx: &Sender<GitOp>,
     ) -> HandleOutcome {
         self.apply_mutation_request_with(

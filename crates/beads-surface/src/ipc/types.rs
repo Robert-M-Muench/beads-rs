@@ -256,7 +256,7 @@ pub enum Request {
         #[serde(flatten)]
         ctx: MutationCtx,
         #[serde(flatten)]
-        payload: IdPayload,
+        payload: ReopenPayload,
     },
 
     /// Delete a bead (soft delete).

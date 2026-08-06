@@ -6,7 +6,7 @@ use beads_core::{
 };
 use beads_surface::ipc::{
     AddNotePayload, ClaimPayload, ClosePayload, CreatePayload, DeletePayload, DepPayload,
-    IdPayload, LabelsPayload, LeasePayload, ParentPayload, UpdatePayload,
+    IdPayload, LabelsPayload, LeasePayload, ParentPayload, ReopenPayload, UpdatePayload,
 };
 use beads_surface::ops::{BeadPatch, Patch};
 use uuid::Uuid;
@@ -51,7 +51,7 @@ pub enum MutationPayload {
     RemoveLabels(LabelsPayload),
     SetParent(ParentPayload),
     Close(ClosePayload),
-    Reopen(IdPayload),
+    Reopen(ReopenPayload),
     Delete(DeletePayload),
     AddDep(DepPayload),
     RemoveDep(DepPayload),
@@ -127,8 +127,9 @@ pub fn close_request(id: impl AsRef<str>, reason: Option<String>) -> MutationPay
 }
 
 pub fn reopen_request(id: impl AsRef<str>) -> MutationPayload {
-    MutationPayload::Reopen(IdPayload {
+    MutationPayload::Reopen(ReopenPayload {
         id: parse_bead_id(id),
+        reason: "test reopen".to_string(),
     })
 }
 

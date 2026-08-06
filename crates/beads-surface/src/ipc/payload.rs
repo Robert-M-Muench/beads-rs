@@ -85,6 +85,12 @@ pub struct ClosePayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReopenPayload {
+    pub id: BeadId,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeletePayload {
     pub id: BeadId,
     #[serde(default)]
