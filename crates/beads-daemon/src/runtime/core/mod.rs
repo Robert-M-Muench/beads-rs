@@ -437,7 +437,8 @@ mod tests {
     use crate::git::sync::SyncOutcome;
     use crate::paths;
     use crate::runtime::ipc::{
-        CreatePayload, MutationCtx, MutationMeta, ReadConsistency, Request, ResponsePayload,
+        ClosePayload, CreatePayload, MutationCtx, MutationMeta, ReadConsistency, Request,
+        ResponsePayload,
     };
     use crate::runtime::store::discovery::store_id_from_remote;
     use beads_api::QueryResult;
@@ -3522,6 +3523,66 @@ mod tests {
         let restored = WriteStamp::new(row.last_physical_ms, row.last_logical);
         let persisted = WriteStamp::new(future_ms, 0);
         assert!(restored > persisted);
+    }
+
+    #[test]
+    fn successful_close_dominates_observed_state_stamp() {
+        let tmp = test_store_dir();
+        let remote = test_remote();
+        let repo_path = tmp.data_dir().join("repo");
+        std::fs::create_dir_all(&repo_path).unwrap();
+        let store_id = store_id_from_remote(&remote);
+        let actor = test_actor();
+        let mut daemon = Daemon::new(actor.clone());
+        insert_store_for_tests(&mut daemon, store_id, remote, &repo_path).unwrap();
+
+        let bead_id = BeadId::parse("bd-causal-close").unwrap();
+        let observed_ms = WallClock::now().0.saturating_add(60_000);
+        let observed = make_stamp(observed_ms, "remote@host");
+        let mut bead = make_bead(bead_id.as_str(), observed_ms, "remote@host");
+        bead.fields.status = Lww::new(IssueStatus::InProgress, observed.clone());
+        daemon
+            .store_sessions
+            .get_mut(&store_id)
+            .unwrap()
+            .runtime_mut()
+            .state
+            .core_mut()
+            .insert(bead)
+            .unwrap();
+
+        let (git_tx, _git_rx) = crossbeam::channel::unbounded();
+        let response = daemon.handle_request(
+            Request::Close {
+                ctx: MutationCtx::new(repo_path, MutationMeta::default()),
+                payload: ClosePayload {
+                    id: bead_id.clone(),
+                    reason: Some("done".to_string()),
+                    on_branch: None,
+                },
+            },
+            &git_tx,
+        );
+        assert!(matches!(
+            response,
+            HandleOutcome::Response(Response::Ok {
+                ok: ResponsePayload::Op(_),
+            })
+        ));
+
+        let status = &daemon
+            .store_sessions
+            .get(&store_id)
+            .unwrap()
+            .runtime()
+            .state
+            .core()
+            .get_live(&bead_id)
+            .unwrap()
+            .fields
+            .status;
+        assert_eq!(status.value, IssueStatus::Done);
+        assert!(status.stamp > observed);
     }
 
     #[test]

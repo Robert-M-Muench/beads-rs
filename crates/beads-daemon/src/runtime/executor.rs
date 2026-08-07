@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use crossbeam::channel::Sender;
 
-use super::core::{Daemon, HandleOutcome, ParsedMutationMeta, detect_clock_skew};
+use super::core::{Daemon, HandleOutcome, ParsedMutationMeta, detect_clock_skew, max_write_stamp};
 use super::durability_coordinator::{
     DurabilityCoordinator, DurabilityRequestClaim, ReplicatedPoll,
 };
@@ -224,10 +224,19 @@ impl Daemon {
             .get(&namespace, &origin_replica_id)
             .copied()
             .unwrap_or_else(Watermark::genesis);
+        // TOMBSTONE: a local LWW event must advance past the canonical state it read.
+        // 2026-08-07 origin seqs 2521/2522 otherwise reported successful status no-ops.
+        let observed_write_stamp = max_write_stamp(
+            proof.lane().last_seen_stamp.clone(),
+            Self::namespace_state(&proof, &namespace).max_write_stamp(),
+        );
 
         drop(proof);
         let (now_ms, stamp) = {
             let clock = self.clock_for_actor_mut(&ctx.actor_id);
+            if let Some(observed) = observed_write_stamp.as_ref() {
+                clock.receive(observed);
+            }
             let now_ms = clock.wall_ms();
             let write_stamp = clock.tick();
             (now_ms, Stamp::new(write_stamp, ctx.actor_id.clone()))
@@ -458,7 +467,8 @@ impl Daemon {
             store_runtime.record_checkpoint_dirty_shards(&namespace, &outcome);
             let write_stamp = WriteStamp::new(hlc_max.physical_ms, hlc_max.logical);
             let now_wall_ms = WallClock::now().0;
-            repo_state.last_seen_stamp = Some(write_stamp.clone());
+            repo_state.last_seen_stamp =
+                max_write_stamp(repo_state.last_seen_stamp.take(), Some(write_stamp.clone()));
             repo_state.last_clock_skew = detect_clock_skew(now_wall_ms, write_stamp.wall_ms);
             repo_state.mark_dirty();
             if let Err(err) = store_runtime.broadcaster.publish(broadcast_event.clone()) {
