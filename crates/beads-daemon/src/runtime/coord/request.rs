@@ -147,7 +147,9 @@ impl Daemon {
             Request::Ready { ctx, payload } => {
                 let repo = ctx.repo.path;
                 let read = ctx.read;
-                self.query_ready(&repo, payload.limit, read, git_tx).into()
+                let label_filters = payload.label_filters();
+                self.query_ready(&repo, label_filters.as_ref(), payload.limit, read, git_tx)
+                    .into()
             }
 
             Request::DepTree { ctx, payload } => {
