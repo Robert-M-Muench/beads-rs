@@ -45,6 +45,12 @@ list:
   --sort
   --json
 
+ready:
+  -l, --label
+  --label-any
+  -n, --limit
+  --json
+
 update:
   --title
   -d, --description
