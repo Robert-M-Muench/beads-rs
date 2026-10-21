@@ -389,6 +389,7 @@ fn ready_for_namespace(
     state: &CanonicalState,
     store_state: &StoreState,
     policies: &std::collections::BTreeMap<NamespaceId, NamespacePolicy>,
+    label_filters: Option<&Filters>,
     limit: Option<usize>,
 ) -> ReadyResult {
     if !namespace_ready_eligible(namespace, policies) {
@@ -405,6 +406,20 @@ fn ready_for_namespace(
 
     let mut views: Vec<IssueSummary> = Vec::new();
     for (id, bead) in state.iter_live() {
+        // Label filters narrow the whole result, counts included, so they run
+        // before the closed/blocked split. Without them, views are built only
+        // for ready beads (the hot path).
+        let mut filtered_view = None;
+        if let Some(filters) = label_filters {
+            let Some(view) = state.bead_view(id) else {
+                continue;
+            };
+            if !filters.matches(&view) {
+                continue;
+            }
+            filtered_view = Some(view);
+        }
+
         if bead.fields.status.value.is_terminal() {
             closed_count += 1;
             continue;
@@ -415,7 +430,7 @@ fn ready_for_namespace(
             blocked_count += 1;
             continue;
         }
-        if let Some(view) = state.bead_view(id) {
+        if let Some(view) = filtered_view.or_else(|| state.bead_view(id)) {
             views.push(IssueSummary::from_view(namespace, &view));
         }
     }
@@ -770,6 +785,7 @@ impl Daemon {
     pub(in crate::runtime) fn query_ready(
         &mut self,
         repo: &Path,
+        label_filters: Option<&Filters>,
         limit: Option<usize>,
         read: ReadConsistency,
         git_tx: &Sender<GitOp>,
@@ -780,6 +796,7 @@ impl Daemon {
                 ctx.state,
                 ctx.store_state,
                 &ctx.store.policies,
+                label_filters,
                 limit,
             );
             Ok(ResponsePayload::query(QueryResult::Ready(result)))
@@ -1375,11 +1392,11 @@ fn tracker_blockers_for_issue(
 }
 #[cfg(test)]
 mod tests {
+    use super::{Filters, dep_cycles_from_state, ready_for_namespace, sort_ready_issues};
     use super::{
         Issue, IssueSummary, field_value_from_upsert, history_entry_from_event, json_value,
         tracker_issue_from_view,
     };
-    use super::{dep_cycles_from_state, sort_ready_issues};
     use crate::core::{
         ActorId, Bead, BeadCore, BeadFields, BeadId, BeadType, CanonicalState, Claim, DepKey,
         DepKind, Dot, EventBody, EventKindV1, HlcMax, IssueStatus, Label, Limits, Lww, NamespaceId,
@@ -1624,6 +1641,144 @@ mod tests {
         assert_eq!(issue.blocked_by.len(), 1);
         assert_eq!(issue.blocked_by[0].identifier, blocker_id.as_str());
         assert_eq!(issue.blocked_by[0].status.as_str(), "In Progress");
+    }
+
+    /// Store with labeled beads for the ready label filter tests:
+    /// ready `bd-alpha` [project:alpha], `bd-both` [project:alpha, urgent],
+    /// `bd-beta` [project:beta], `bd-none` [], closed `bd-alpha-done`
+    /// [project:alpha] and `bd-beta-done` [project:beta], and `bd-alpha-wait`
+    /// [project:alpha] blocked by `bd-beta`.
+    fn labeled_ready_store() -> crate::core::StoreState {
+        let actor = ActorId::new("tester").unwrap();
+        let stamp = Stamp::new(WriteStamp::new(4_000, 0), actor);
+        let beads: [(&str, &[&str], IssueStatus); 7] = [
+            ("bd-alpha", &["project:alpha"], IssueStatus::Todo),
+            ("bd-both", &["project:alpha", "urgent"], IssueStatus::Todo),
+            ("bd-beta", &["project:beta"], IssueStatus::Todo),
+            ("bd-none", &[], IssueStatus::Todo),
+            ("bd-alpha-done", &["project:alpha"], IssueStatus::Done),
+            ("bd-beta-done", &["project:beta"], IssueStatus::Done),
+            ("bd-alpha-wait", &["project:alpha"], IssueStatus::Todo),
+        ];
+        let mut state = CanonicalState::new();
+        let mut counter = 0u64;
+        for (id, labels, status) in beads {
+            let mut bead = make_bead(id, &stamp);
+            bead.fields.status = Lww::new(status, stamp.clone());
+            let bead_id = bead.id().clone();
+            let lineage = bead.core.created().clone();
+            state.insert(bead).expect("insert bead");
+            for label in labels {
+                counter += 1;
+                state.apply_label_add(
+                    bead_id.clone(),
+                    Label::parse(*label).expect("label"),
+                    Dot {
+                        replica: ReplicaId::new(Uuid::from_bytes([7u8; 16])),
+                        counter,
+                    },
+                    stamp.clone(),
+                    lineage.clone(),
+                );
+            }
+        }
+        let wait = DepKey::new_local(
+            &NamespaceId::core(),
+            BeadId::parse("bd-alpha-wait").unwrap(),
+            BeadId::parse("bd-beta").unwrap(),
+            DepKind::Blocks,
+        )
+        .expect("dep key");
+        let wait = state.check_dep_add_key(wait).expect("checked dep");
+        state.apply_dep_add(
+            wait,
+            Dot {
+                replica: ReplicaId::new(Uuid::from_bytes([8u8; 16])),
+                counter: 1,
+            },
+            stamp,
+        );
+        let mut store = crate::core::StoreState::new();
+        store.set_core_state(state);
+        store
+    }
+
+    fn ready_ids(
+        store: &crate::core::StoreState,
+        filters: Option<&Filters>,
+        limit: Option<usize>,
+    ) -> (Vec<String>, usize, usize) {
+        let mut policies = std::collections::BTreeMap::new();
+        policies.insert(
+            NamespaceId::core(),
+            crate::core::NamespacePolicy::core_default(),
+        );
+        let result = ready_for_namespace(
+            &NamespaceId::core(),
+            store.core(),
+            store,
+            &policies,
+            filters,
+            limit,
+        );
+        let mut ids: Vec<String> = result.issues.into_iter().map(|issue| issue.id).collect();
+        ids.sort();
+        (ids, result.blocked_count, result.closed_count)
+    }
+
+    fn label_filters(labels: &[&str], labels_any: &[&str]) -> Filters {
+        let owned = |values: &[&str]| {
+            (!values.is_empty()).then(|| values.iter().map(|v| v.to_string()).collect())
+        };
+        Filters {
+            labels: owned(labels),
+            labels_any: owned(labels_any),
+            ..Filters::default()
+        }
+    }
+
+    #[test]
+    fn ready_without_label_filters_lists_all_ready_beads() {
+        let store = labeled_ready_store();
+        let (ids, blocked, closed) = ready_ids(&store, None, None);
+        assert_eq!(ids, vec!["bd-alpha", "bd-beta", "bd-both", "bd-none"]);
+        assert_eq!((blocked, closed), (1, 2));
+    }
+
+    #[test]
+    fn ready_label_filter_requires_all_labels_and_scopes_counts() {
+        let store = labeled_ready_store();
+
+        let alpha = label_filters(&["project:alpha"], &[]);
+        let (ids, blocked, closed) = ready_ids(&store, Some(&alpha), None);
+        assert_eq!(ids, vec!["bd-alpha", "bd-both"]);
+        // Counts refer to the filtered set: bd-alpha-wait and bd-alpha-done
+        // only, not the project:beta or unlabeled beads.
+        assert_eq!((blocked, closed), (1, 1));
+
+        let alpha_urgent = label_filters(&["project:alpha", "urgent"], &[]);
+        let (ids, blocked, closed) = ready_ids(&store, Some(&alpha_urgent), None);
+        assert_eq!(ids, vec!["bd-both"]);
+        assert_eq!((blocked, closed), (0, 0));
+    }
+
+    #[test]
+    fn ready_label_any_filter_requires_one_label() {
+        let store = labeled_ready_store();
+        let any = label_filters(&[], &["project:beta", "urgent"]);
+        let (ids, blocked, closed) = ready_ids(&store, Some(&any), None);
+        assert_eq!(ids, vec!["bd-beta", "bd-both"]);
+        assert_eq!((blocked, closed), (0, 1));
+    }
+
+    #[test]
+    fn ready_label_filter_applies_before_limit() {
+        let store = labeled_ready_store();
+        let beta = label_filters(&["project:beta"], &[]);
+        // All ready beads tie on priority and creation time, so bd-alpha
+        // comes first; limiting before filtering would return nothing.
+        let (ids, _, _) = ready_ids(&store, Some(&beta), Some(1));
+        assert_eq!(ids, vec!["bd-beta"]);
     }
 
     #[test]

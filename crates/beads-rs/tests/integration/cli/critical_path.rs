@@ -320,6 +320,92 @@ fn test_dependencies() {
         .stdout(predicate::str::contains("Task B"));
 }
 
+#[test]
+fn test_ready_label_filters() {
+    let repo = TestRepo::new();
+    repo.bd().arg("init").assert().success();
+
+    let create = |title: &str, labels: &str| {
+        let mut cmd = repo.bd();
+        cmd.args(["create", title, "--type=task", "--json"]);
+        if !labels.is_empty() {
+            cmd.args(["--labels", labels]);
+        }
+        let output = cmd.assert().success().get_output().stdout.clone();
+        cli_issue_id_from_output(&output)
+    };
+    create("Alpha only", "project:alpha");
+    create("Alpha urgent", "project:alpha,urgent");
+    let beta = create("Beta only", "project:beta");
+    create("Unlabeled", "");
+    let alpha_done = create("Alpha done", "project:alpha");
+    let alpha_wait = create("Alpha waiting", "project:alpha");
+    repo.bd().args(["close", &alpha_done]).assert().success();
+    repo.bd()
+        .args(["dep", "add", &alpha_wait, &beta])
+        .assert()
+        .success();
+
+    let ready_titles = |args: &[&str]| -> Vec<String> {
+        let output = repo
+            .bd()
+            .arg("ready")
+            .args(args)
+            .arg("--json")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let value: serde_json::Value = serde_json::from_slice(&output).expect("ready JSON");
+        let mut titles: Vec<String> = cli_issue_array_json(&value)
+            .iter()
+            .map(|issue| issue["title"].as_str().expect("title").to_string())
+            .collect();
+        titles.sort();
+        titles
+    };
+
+    // -l / --label: must have ALL, repeated or comma-separated.
+    assert_eq!(
+        ready_titles(&["-l", "project:alpha"]),
+        vec!["Alpha only", "Alpha urgent"]
+    );
+    assert_eq!(
+        ready_titles(&["-l", "project:alpha", "--label", "urgent"]),
+        vec!["Alpha urgent"]
+    );
+    assert_eq!(
+        ready_titles(&["-l", "project:alpha,urgent"]),
+        vec!["Alpha urgent"]
+    );
+    // --label-any: must have AT LEAST ONE, repeated or comma-separated.
+    assert_eq!(
+        ready_titles(&["--label-any", "project:beta,urgent"]),
+        vec!["Alpha urgent", "Beta only"]
+    );
+    assert_eq!(
+        ready_titles(&["--label-any", "project:beta", "--label-any", "urgent"]),
+        vec!["Alpha urgent", "Beta only"]
+    );
+    assert!(ready_titles(&["-l", "project:none"]).is_empty());
+    // The limit applies to the filtered set.
+    assert_eq!(
+        ready_titles(&["-l", "project:beta", "--limit", "1"]),
+        vec!["Beta only"]
+    );
+
+    // Human output: the list and the blocked/closed counts are scoped too.
+    repo.bd()
+        .args(["ready", "-l", "project:alpha"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Ready work (2 issues"))
+        .stdout(predicate::str::contains("Alpha only"))
+        .stdout(predicate::str::contains("Beta only").not())
+        .stdout(predicate::str::contains("1 blocked, 1 closed"));
+}
+
 #[cfg(feature = "slow-tests")]
 #[test]
 fn test_discovered_from_workflow() {

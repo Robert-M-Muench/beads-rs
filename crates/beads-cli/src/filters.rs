@@ -22,6 +22,38 @@ pub fn validation_error(field: impl Into<String>, reason: impl Into<String>) -> 
     }
 }
 
+/// Label filter flags shared by `list`, `count` and `ready`.
+#[derive(Args, Debug, Clone)]
+pub struct LabelFilterArgs {
+    /// Filter by labels (AND: must have ALL). Repeat or comma-separated.
+    #[arg(short = 'l', long = "label", alias = "labels", value_delimiter = ',', num_args = 0..)]
+    pub labels: Vec<String>,
+
+    /// Filter by labels (OR: must have AT LEAST ONE). Repeat or comma-separated.
+    #[arg(long = "label-any", value_delimiter = ',', num_args = 0..)]
+    pub labels_any: Vec<String>,
+}
+
+impl LabelFilterArgs {
+    /// The AND label set, or `None` when no `--label` was given.
+    pub fn labels(&self) -> Option<Vec<String>> {
+        non_empty(&self.labels)
+    }
+
+    /// The OR label set, or `None` when no `--label-any` was given.
+    pub fn labels_any(&self) -> Option<Vec<String>> {
+        non_empty(&self.labels_any)
+    }
+}
+
+fn non_empty(values: &[String]) -> Option<Vec<String>> {
+    if values.is_empty() {
+        None
+    } else {
+        Some(values.to_vec())
+    }
+}
+
 #[derive(Args, Debug, Clone)]
 pub struct CommonFilterArgs {
     /// Filter by status (todo, in_progress, human_review, rework, merging, done, cancelled, duplicate).
@@ -48,13 +80,8 @@ pub struct CommonFilterArgs {
     #[arg(short = 'a', long)]
     pub assignee: Option<String>,
 
-    /// Filter by labels (AND: must have ALL). Repeat or comma-separated.
-    #[arg(short = 'l', long = "label", alias = "labels", value_delimiter = ',', num_args = 0..)]
-    pub labels: Vec<String>,
-
-    /// Filter by labels (OR: must have AT LEAST ONE). Repeat or comma-separated.
-    #[arg(long = "label-any", value_delimiter = ',', num_args = 0..)]
-    pub labels_any: Vec<String>,
+    #[command(flatten)]
+    pub label_filter: LabelFilterArgs,
 
     /// Filter by title substring.
     #[arg(long = "title-contains")]
@@ -112,14 +139,8 @@ pub fn apply_common_filters(args: &CommonFilterArgs, filters: &mut Filters) -> R
     filters.priority_max = args.priority_max;
     filters.bead_type = args.bead_type;
     filters.assignee = args.assignee.as_deref().map(ActorId::new).transpose()?;
-    filters.labels = if args.labels.is_empty() {
-        None
-    } else {
-        Some(args.labels.clone())
-    };
-    if !args.labels_any.is_empty() {
-        filters.labels_any = Some(args.labels_any.clone());
-    }
+    filters.labels = args.label_filter.labels();
+    filters.labels_any = args.label_filter.labels_any();
     filters.title_contains = args.title_contains.clone().filter(|s| !s.trim().is_empty());
     filters.desc_contains = args.desc_contains.clone().filter(|s| !s.trim().is_empty());
     filters.notes_contains = args.notes_contains.clone().filter(|s| !s.trim().is_empty());

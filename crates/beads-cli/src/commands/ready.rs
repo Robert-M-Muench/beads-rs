@@ -4,6 +4,7 @@ use clap::Args;
 
 use super::common::fmt_issue_ref;
 use super::{CommandResult, print_ok};
+use crate::filters::LabelFilterArgs;
 use crate::runtime::{CliRuntimeCtx, send};
 
 #[derive(Args, Debug)]
@@ -11,6 +12,9 @@ pub struct ReadyArgs {
     /// Limit results.
     #[arg(short = 'n', long)]
     pub limit: Option<usize>,
+
+    #[command(flatten)]
+    pub label_filter: LabelFilterArgs,
 }
 
 pub fn handle(ctx: &CliRuntimeCtx, args: ReadyArgs) -> CommandResult<()> {
@@ -18,6 +22,8 @@ pub fn handle(ctx: &CliRuntimeCtx, args: ReadyArgs) -> CommandResult<()> {
         ctx: ctx.read_ctx(),
         payload: ReadyPayload {
             limit: args.limit.filter(|limit| *limit > 0),
+            labels: args.label_filter.labels(),
+            labels_any: args.label_filter.labels_any(),
         },
     };
     let ok = send(&req)?;

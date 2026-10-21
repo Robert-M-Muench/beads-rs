@@ -230,6 +230,30 @@ where
 pub struct ReadyPayload {
     #[serde(default)]
     pub limit: Option<usize>,
+
+    /// Only ready beads that carry ALL of these labels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub labels: Option<Vec<String>>,
+
+    /// Only ready beads that carry AT LEAST ONE of these labels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub labels_any: Option<Vec<String>>,
+}
+
+impl ReadyPayload {
+    /// The label constraints as list [`Filters`], or `None` when the request has none.
+    ///
+    /// `ready` matches labels through [`Filters::matches`], the same code `list` uses.
+    pub fn label_filters(&self) -> Option<Filters> {
+        if self.labels.is_none() && self.labels_any.is_none() {
+            return None;
+        }
+        Some(Filters {
+            labels: self.labels.clone(),
+            labels_any: self.labels_any.clone(),
+            ..Filters::default()
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
