@@ -389,6 +389,13 @@ fn test_ready_label_filters() {
         vec!["Alpha urgent", "Beta only"]
     );
     assert!(ready_titles(&["-l", "project:none"]).is_empty());
+    // `*` is a wildcard; without one a label matches exactly.
+    assert!(ready_titles(&["-l", "alph"]).is_empty());
+    assert_eq!(ready_titles(&["-l", "*alph*,urg*"]), vec!["Alpha urgent"]);
+    assert_eq!(
+        ready_titles(&["--label-any", "*:beta,urg*"]),
+        vec!["Alpha urgent", "Beta only"]
+    );
     // The limit applies to the filtered set.
     assert_eq!(
         ready_titles(&["-l", "project:beta", "--limit", "1"]),

@@ -25,11 +25,13 @@ pub fn validation_error(field: impl Into<String>, reason: impl Into<String>) -> 
 /// Label filter flags shared by `list`, `count` and `ready`.
 #[derive(Args, Debug, Clone)]
 pub struct LabelFilterArgs {
-    /// Filter by labels (AND: must have ALL). Repeat or comma-separated.
+    /// Filter by labels (AND: must have ALL). Repeat or comma-separated; `*` is a
+    /// wildcard (`-l '*3d-sim*'`), otherwise labels match exactly.
     #[arg(short = 'l', long = "label", alias = "labels", value_delimiter = ',', num_args = 0..)]
     pub labels: Vec<String>,
 
-    /// Filter by labels (OR: must have AT LEAST ONE). Repeat or comma-separated.
+    /// Filter by labels (OR: must have AT LEAST ONE). Repeat or comma-separated; `*`
+    /// is a wildcard, otherwise labels match exactly.
     #[arg(long = "label-any", value_delimiter = ',', num_args = 0..)]
     pub labels_any: Vec<String>,
 }
