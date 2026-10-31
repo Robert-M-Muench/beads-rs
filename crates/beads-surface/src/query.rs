@@ -37,11 +37,11 @@ pub struct Filters {
     #[serde(default)]
     pub assignee: Option<ActorId>,
 
-    /// Filter by labels (AND: must have ALL).
+    /// Filter by labels (AND: must match ALL); `*` is a wildcard, otherwise exact.
     #[serde(default)]
     pub labels: Option<Vec<String>>,
 
-    /// Filter by labels (OR: must have AT LEAST ONE).
+    /// Filter by labels (OR: must match AT LEAST ONE); `*` is a wildcard, otherwise exact.
     #[serde(default)]
     pub labels_any: Option<Vec<String>>,
 
@@ -183,7 +183,7 @@ impl Filters {
 
         // Labels filter (AND)
         if let Some(ref labels) = self.labels {
-            let has_all = labels.iter().all(|l| view.labels.contains(l));
+            let has_all = labels.iter().all(|p| has_label_matching(view, p));
             if !has_all {
                 return false;
             }
@@ -191,7 +191,7 @@ impl Filters {
 
         // LabelsAny filter (OR)
         if let Some(ref labels_any) = self.labels_any {
-            let has_any = labels_any.iter().any(|l| view.labels.contains(l));
+            let has_any = labels_any.iter().any(|p| has_label_matching(view, p));
             if !has_any {
                 return false;
             }
@@ -313,5 +313,63 @@ impl Filters {
         }
 
         true
+    }
+}
+
+fn has_label_matching(view: &BeadView, pattern: &str) -> bool {
+    view.labels
+        .iter()
+        .any(|label| label_matches(pattern, label.as_str()))
+}
+
+/// Whether `label` matches a label filter `pattern`: exact, unless the pattern
+/// contains `*`, which matches any run of characters (`project:*`, `*3d-sim*`).
+fn label_matches(pattern: &str, label: &str) -> bool {
+    let parts: Vec<&str> = pattern.split('*').collect();
+    let (first, rest) = parts.split_first().expect("split yields at least one part");
+    let Some((last, middle)) = rest.split_last() else {
+        return label == *first;
+    };
+    let Some(mut remaining) = label.strip_prefix(first) else {
+        return false;
+    };
+    for part in middle {
+        let Some(at) = remaining.find(part) else {
+            return false;
+        };
+        remaining = &remaining[at + part.len()..];
+    }
+    remaining.ends_with(last)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::label_matches;
+
+    #[test]
+    fn label_pattern_without_star_matches_exactly() {
+        assert!(label_matches("tech-debt", "tech-debt"));
+        assert!(!label_matches("tech", "tech-debt"));
+        assert!(!label_matches("gc:x", "gc:xy"));
+    }
+
+    #[test]
+    fn label_pattern_star_matches_any_run() {
+        let label = "project:go-code/3d-similarity-indexer";
+        assert!(label_matches("*3d-sim*", label));
+        assert!(label_matches("project:*", label));
+        assert!(label_matches("*-indexer", label));
+        assert!(label_matches("project:*/3d-*-indexer", label));
+        assert!(label_matches("*", label));
+        assert!(!label_matches("*3d-sim", label));
+        assert!(!label_matches("code*", label));
+        assert!(!label_matches("*indexer*go*", label));
+    }
+
+    #[test]
+    fn label_pattern_prefix_and_suffix_do_not_overlap() {
+        assert!(!label_matches("ab*ba", "aba"));
+        assert!(label_matches("ab*ba", "abba"));
+        assert!(label_matches("a**a", "aa"));
     }
 }
