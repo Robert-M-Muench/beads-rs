@@ -18,6 +18,41 @@ use crate::runtime::Request;
 use crate::runtime::server::{RequestMessage, handle_client, run_state_loop};
 use crate::runtime::{Daemon, GitResult, GitWorker, run_git_loop};
 
+/// Default libgit2 connect timeout for fetch and push transports.
+const GIT_SERVER_CONNECT_TIMEOUT_MS: i32 = 30_000;
+/// Default libgit2 read/write timeout for fetch and push transports.
+///
+/// Without one, a half-open TCP connection to the remote blocks the git worker
+/// in `recv` forever (beads-rs-k4fh) and sync stops for good.
+const GIT_SERVER_TIMEOUT_MS: i32 = 120_000;
+
+/// Read an optional positive millisecond override from the environment.
+fn timeout_override(var: &str) -> Option<i32> {
+    std::env::var(var)
+        .ok()
+        .and_then(|raw| raw.parse::<i32>().ok())
+        .filter(|ms| *ms > 0)
+}
+
+/// Bound every libgit2 network operation in this process.
+///
+/// These are process-global libgit2 options, set once before the git worker
+/// starts. `BD_GIT_CONNECT_TIMEOUT_MS` and `BD_GIT_SERVER_TIMEOUT_MS` override
+/// the defaults.
+fn configure_git_transport_timeouts() {
+    let connect =
+        timeout_override("BD_GIT_CONNECT_TIMEOUT_MS").unwrap_or(GIT_SERVER_CONNECT_TIMEOUT_MS);
+    let read = timeout_override("BD_GIT_SERVER_TIMEOUT_MS").unwrap_or(GIT_SERVER_TIMEOUT_MS);
+    match crate::git::set_transport_timeouts(connect, read) {
+        Ok(()) => tracing::info!(
+            connect_ms = connect,
+            read_ms = read,
+            "git transport timeouts set"
+        ),
+        Err(err) => tracing::warn!("failed to set git transport timeouts: {err}"),
+    }
+}
+
 fn wake_listener(socket: &Path) {
     if let Err(err) = UnixStream::connect(socket) {
         tracing::debug!("shutdown wake connect failed: {}", err);
@@ -108,6 +143,8 @@ pub fn run_daemon(
         .map_err(|source| IpcError::Transport { source })?;
     signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&shutdown))
         .map_err(|source| IpcError::Transport { source })?;
+
+    configure_git_transport_timeouts();
 
     // Create channels.
     let (req_tx, req_rx) = crossbeam::channel::unbounded::<RequestMessage>();
@@ -228,6 +265,7 @@ pub fn run_daemon(
 
 #[cfg(test)]
 mod tests {
+
     use super::{duration_ms_since_epoch, system_time_ms};
     use std::time::{Duration, UNIX_EPOCH};
 
