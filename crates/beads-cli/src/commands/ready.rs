@@ -22,7 +22,7 @@ pub fn handle(ctx: &CliRuntimeCtx, args: ReadyArgs) -> CommandResult<()> {
         ctx: ctx.read_ctx(),
         payload: ReadyPayload {
             limit: args.limit.filter(|limit| *limit > 0),
-            label_filter: args.label_filter.to_payload(),
+            label_filter: args.label_filter.resolve(ctx),
         },
     };
     let ok = send(&req)?;

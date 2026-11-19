@@ -79,7 +79,7 @@ pub fn handle_list(ctx: &CliRuntimeCtx, args: ListArgs) -> CommandResult<()> {
         .unwrap_or_else(|| ctx.clone());
 
     let mut filters = Filters::default();
-    apply_common_filters(&args.common, &mut filters)?;
+    apply_common_filters(&args.common, ctx, &mut filters)?;
 
     if args.all && args.common.status.is_some() {
         return Err(validation_error("all", "--all cannot be combined with --status").into());

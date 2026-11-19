@@ -150,9 +150,18 @@ global flags:
 --client-request-id <uuid>  Client request id for idempotent retries
 --require-min-seen <json>   Read gating: applied watermarks to satisfy before reads
 --wait-timeout-ms <ms>      Optional wait for require-min-seen (0/omit = no wait)
+--no-default-labels         Ignore the default label filter for this invocation
 -q, --quiet        Errors only
 -v, --verbose      Debug output
 --version
+
+default label filter:
+
+`BD_LABEL=project:foo` (comma-separated, `*` wildcard; or `[defaults] labels = [...]` in
+config.toml / beads.toml, which `BD_LABEL` overrides and `BD_LABEL=` clears) is the
+default `-l` for ready, list, count, blocked, stale and search. Explicit `-l`,
+`--label-any` or `--no-labels` replace it; `--no-default-labels` ignores it. Human output
+notes an active default on stderr; `--json` stdout is unchanged.
 
 require-min-seen JSON example (copy from admin status for accuracy):
 

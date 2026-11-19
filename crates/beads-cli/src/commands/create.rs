@@ -668,13 +668,8 @@ mod tests {
     fn sample_ctx() -> CliRuntimeCtx {
         CliRuntimeCtx {
             repo: std::path::PathBuf::from("/tmp/beads"),
-            json: false,
             namespace: Some(NamespaceId::core()),
-            durability: None,
-            client_request_id: None,
-            require_min_seen: None,
-            wait_timeout_ms: None,
-            actor_id: None,
+            ..Default::default()
         }
     }
 

@@ -163,6 +163,10 @@ Type + priority + status covers most organization. Labels are for cross-cutting 
 ```bash
 bd label add <id> tech-debt
 ```
+
+In a monorepo, scope listings to one project: `bd ready -l project:foo` (`*` is a
+wildcard). `BD_LABEL=project:foo` makes that the default `-l` for ready, list, count,
+blocked, stale and search; an explicit `-l` replaces it, `--no-default-labels` shows all.
 "#,
         close_protocol
     )

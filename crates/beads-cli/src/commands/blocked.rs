@@ -16,7 +16,7 @@ pub fn handle(ctx: &CliRuntimeCtx, args: BlockedArgs) -> CommandResult<()> {
     let req = Request::Blocked {
         ctx: ctx.read_ctx(),
         payload: BlockedPayload {
-            label_filter: args.label_filter.to_payload(),
+            label_filter: args.label_filter.resolve(ctx),
         },
     };
     let ok = send(&req)?;

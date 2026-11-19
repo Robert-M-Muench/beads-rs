@@ -439,6 +439,134 @@ fn test_blocked_stale_search_label_filters() {
 }
 
 #[test]
+fn test_default_label_filter_from_bd_label() {
+    let repo = TestRepo::new();
+    repo.bd().arg("init").assert().success();
+
+    let alpha = repo.create_labeled_task("Alpha task", "project:alpha");
+    repo.create_labeled_task("Beta task", "project:beta");
+    repo.create_labeled_task("Plain task", "");
+    let alpha_wait = repo.create_labeled_task("Alpha waiting", "project:alpha");
+    repo.bd()
+        .args(["dep", "add", &alpha_wait, &alpha])
+        .assert()
+        .success();
+
+    // `bd <cmd> --json` titles with BD_LABEL set to `bd_label` (None: unset).
+    let titles = |bd_label: Option<&str>, cmd: &[&str]| -> Vec<String> {
+        let mut bd = repo.bd();
+        if let Some(value) = bd_label {
+            bd.env("BD_LABEL", value);
+        }
+        let output = bd
+            .args(cmd)
+            .arg("--json")
+            .assert()
+            .success()
+            .get_output()
+            .clone();
+        assert!(
+            !String::from_utf8_lossy(&output.stderr).contains("default label filter"),
+            "--json must not print the default-filter note"
+        );
+        cli_sorted_titles(&output.stdout)
+    };
+    let alpha_label = Some("project:alpha");
+
+    // Every listing command picks up the default.
+    assert_eq!(titles(alpha_label, &["ready"]), vec!["Alpha task"]);
+    assert_eq!(
+        titles(alpha_label, &["list"]),
+        vec!["Alpha task", "Alpha waiting"]
+    );
+    assert_eq!(titles(alpha_label, &["blocked"]), vec!["Alpha waiting"]);
+    assert_eq!(
+        titles(alpha_label, &["stale", "--days=0"]),
+        vec!["Alpha task", "Alpha waiting"]
+    );
+    assert_eq!(titles(alpha_label, &["search", "task"]), vec!["Alpha task"]);
+    repo.bd()
+        .env("BD_LABEL", "project:alpha")
+        .args(["count", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"count\": 2"));
+    // Comma lists and wildcards work as for -l.
+    assert_eq!(
+        titles(Some(" project:* , project:beta "), &["ready"]),
+        vec!["Beta task"]
+    );
+
+    // Explicit label flags replace the default instead of adding to it.
+    assert_eq!(
+        titles(alpha_label, &["ready", "-l", "project:beta"]),
+        vec!["Beta task"]
+    );
+    assert_eq!(
+        titles(alpha_label, &["list", "--label-any", "project:beta"]),
+        vec!["Beta task"]
+    );
+    assert_eq!(
+        titles(alpha_label, &["list", "--no-labels"]),
+        vec!["Plain task"]
+    );
+
+    // --no-default-labels (anywhere on the line) and an empty BD_LABEL show everything.
+    let all_ready = vec!["Alpha task", "Beta task", "Plain task"];
+    assert_eq!(titles(None, &["ready"]), all_ready);
+    assert_eq!(
+        titles(alpha_label, &["ready", "--no-default-labels"]),
+        all_ready
+    );
+    assert_eq!(
+        titles(alpha_label, &["--no-default-labels", "ready"]),
+        all_ready
+    );
+    assert_eq!(titles(Some(""), &["ready"]), all_ready);
+
+    // Human output names the default on stderr, never on stdout.
+    repo.bd()
+        .env("BD_LABEL", "project:alpha")
+        .arg("ready")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Alpha task"))
+        .stdout(predicate::str::contains("default label filter").not())
+        .stderr(predicate::str::contains(
+            "default label filter -l project:alpha",
+        ));
+    repo.bd()
+        .env("BD_LABEL", "project:alpha")
+        .args(["ready", "-l", "project:beta"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("default label filter").not());
+    // --quiet keeps the filter but drops the note.
+    repo.bd()
+        .env("BD_LABEL", "project:alpha")
+        .args(["ready", "-q"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Alpha task"))
+        .stdout(predicate::str::contains("Beta task").not())
+        .stderr(predicate::str::contains("default label filter").not());
+
+    // A label flag needs a value: an empty one is an error, never a silent fallback
+    // to the default.
+    for args in [
+        &["ready", "--label-any"][..],
+        &["ready", "-l", ""],
+        &["list", "-l", "a,,b"],
+    ] {
+        repo.bd()
+            .env("BD_LABEL", "project:alpha")
+            .args(args)
+            .assert()
+            .failure();
+    }
+}
+
+#[test]
 fn test_ready_label_filters() {
     let repo = TestRepo::new();
     repo.bd().arg("init").assert().success();

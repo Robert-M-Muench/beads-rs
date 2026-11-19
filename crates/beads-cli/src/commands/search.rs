@@ -21,11 +21,12 @@ pub struct SearchArgs {
 }
 
 pub fn handle(ctx: &CliRuntimeCtx, args: SearchArgs) -> CommandResult<()> {
+    let label_filter = args.label_filter.resolve(ctx);
     let filters = Filters {
         search: Some(args.query.join(" ")),
         limit: args.limit,
-        labels: args.label_filter.labels(),
-        labels_any: args.label_filter.labels_any(),
+        labels: label_filter.labels,
+        labels_any: label_filter.labels_any,
         ..Default::default()
     };
     let req = Request::List {

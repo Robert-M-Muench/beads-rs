@@ -33,7 +33,7 @@ pub fn handle(ctx: &CliRuntimeCtx, args: StaleArgs) -> CommandResult<()> {
             days: args.days,
             status: args.status,
             limit: Some(args.limit),
-            label_filter: args.label_filter.to_payload(),
+            label_filter: args.label_filter.resolve(ctx),
         },
     };
     let ok = send(&req)?;
