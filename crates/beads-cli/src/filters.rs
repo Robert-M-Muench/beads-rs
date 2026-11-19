@@ -1,6 +1,8 @@
 use beads_core::{ActorId, BeadType, CoreError, Priority};
 use beads_surface::Filters;
+use beads_surface::ipc::LabelFilter;
 use clap::Args;
+use clap::builder::NonEmptyStringValueParser;
 
 use super::parsers::{parse_bead_type, parse_priority, parse_status, parse_time_ms};
 
@@ -22,17 +24,29 @@ pub fn validation_error(field: impl Into<String>, reason: impl Into<String>) -> 
     }
 }
 
-/// Label filter flags shared by `list`, `count` and `ready`.
+/// Label filter flags shared by `list`, `count`, `ready`, `blocked`, `stale` and `search`.
 #[derive(Args, Debug, Clone)]
 pub struct LabelFilterArgs {
+    // One value per occurrence: a variadic flag would swallow a following positional
+    // (`bd search -l x timeout`) and could be given with no value at all.
     /// Filter by labels (AND: must have ALL). Repeat or comma-separated; `*` is a
     /// wildcard (`-l '*3d-sim*'`), otherwise labels match exactly.
-    #[arg(short = 'l', long = "label", alias = "labels", value_delimiter = ',', num_args = 0..)]
+    #[arg(
+        short = 'l',
+        long = "label",
+        alias = "labels",
+        value_delimiter = ',',
+        value_parser = NonEmptyStringValueParser::new()
+    )]
     pub labels: Vec<String>,
 
     /// Filter by labels (OR: must have AT LEAST ONE). Repeat or comma-separated; `*`
     /// is a wildcard, otherwise labels match exactly.
-    #[arg(long = "label-any", value_delimiter = ',', num_args = 0..)]
+    #[arg(
+        long = "label-any",
+        value_delimiter = ',',
+        value_parser = NonEmptyStringValueParser::new()
+    )]
     pub labels_any: Vec<String>,
 }
 
@@ -45,6 +59,14 @@ impl LabelFilterArgs {
     /// The OR label set, or `None` when no `--label-any` was given.
     pub fn labels_any(&self) -> Option<Vec<String>> {
         non_empty(&self.labels_any)
+    }
+
+    /// The flags as the IPC label constraint of the `ready`, `blocked` and `stale` payloads.
+    pub fn to_payload(&self) -> LabelFilter {
+        LabelFilter {
+            labels: self.labels(),
+            labels_any: self.labels_any(),
+        }
     }
 }
 

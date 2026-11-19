@@ -125,7 +125,7 @@ pub enum Command {
     Ready(commands::ready::ReadyArgs),
 
     /// Show blocked issues.
-    Blocked,
+    Blocked(commands::blocked::BlockedArgs),
 
     /// Show stale issues (not updated recently).
     Stale(commands::stale::StaleArgs),
@@ -295,7 +295,7 @@ pub fn command_name(command: &Command) -> String {
         Command::Log(_) => "log".to_string(),
         Command::Search(_) => "search".to_string(),
         Command::Ready(_) => "ready".to_string(),
-        Command::Blocked => "blocked".to_string(),
+        Command::Blocked(_) => "blocked".to_string(),
         Command::Stale(_) => "stale".to_string(),
         Command::Count(_) => "count".to_string(),
         Command::Deleted(_) => "deleted".to_string(),
@@ -402,7 +402,7 @@ where
         Command::Log(args) => commands::log::handle(ctx, args).map_err(Into::into),
         Command::Search(args) => commands::search::handle(ctx, args).map_err(Into::into),
         Command::Ready(args) => commands::ready::handle(ctx, args).map_err(Into::into),
-        Command::Blocked => commands::blocked::handle(ctx).map_err(Into::into),
+        Command::Blocked(args) => commands::blocked::handle(ctx, args).map_err(Into::into),
         Command::Stale(args) => commands::stale::handle(ctx, args).map_err(Into::into),
         Command::Count(args) => commands::count::handle(ctx, args).map_err(Into::into),
         Command::Deleted(args) => commands::deleted::handle(ctx, args).map_err(Into::into),

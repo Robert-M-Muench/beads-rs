@@ -147,7 +147,7 @@ impl Daemon {
             Request::Ready { ctx, payload } => {
                 let repo = ctx.repo.path;
                 let read = ctx.read;
-                let label_filters = payload.label_filters();
+                let label_filters = payload.label_filter.to_filters();
                 self.query_ready(&repo, label_filters.as_ref(), payload.limit, read, git_tx)
                     .into()
             }
@@ -176,24 +176,18 @@ impl Daemon {
                 self.query_notes(&repo, &payload.id, read, git_tx).into()
             }
 
-            Request::Blocked { ctx, .. } => {
+            Request::Blocked { ctx, payload } => {
                 let repo = ctx.repo.path;
                 let read = ctx.read;
-                self.query_blocked(&repo, read, git_tx).into()
+                let label_filters = payload.label_filter.to_filters();
+                self.query_blocked(&repo, label_filters.as_ref(), read, git_tx)
+                    .into()
             }
 
             Request::Stale { ctx, payload } => {
                 let repo = ctx.repo.path;
                 let read = ctx.read;
-                self.query_stale(
-                    &repo,
-                    payload.days,
-                    payload.status,
-                    payload.limit,
-                    read,
-                    git_tx,
-                )
-                .into()
+                self.query_stale(&repo, &payload, read, git_tx).into()
             }
 
             Request::Count { ctx, payload } => {

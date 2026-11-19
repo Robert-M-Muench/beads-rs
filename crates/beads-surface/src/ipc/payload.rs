@@ -226,25 +226,25 @@ where
     Ok(Some(statuses))
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReadyPayload {
-    #[serde(default)]
-    pub limit: Option<usize>,
-
-    /// Only ready beads that carry ALL of these labels.
+/// Label constraints shared by the `ready`, `blocked` and `stale` payloads.
+///
+/// Flattened into each payload, so the wire keys are `labels` and `labels_any`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LabelFilter {
+    /// Only beads that carry ALL of these labels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
 
-    /// Only ready beads that carry AT LEAST ONE of these labels.
+    /// Only beads that carry AT LEAST ONE of these labels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub labels_any: Option<Vec<String>>,
 }
 
-impl ReadyPayload {
-    /// The label constraints as list [`Filters`], or `None` when the request has none.
+impl LabelFilter {
+    /// The label constraints as list [`Filters`], or `None` when there are none.
     ///
-    /// `ready` matches labels through [`Filters::matches`], the same code `list` uses.
-    pub fn label_filters(&self) -> Option<Filters> {
+    /// Callers match through [`Filters::matches`], the same code `list` uses.
+    pub fn to_filters(&self) -> Option<Filters> {
         if self.labels.is_none() && self.labels_any.is_none() {
             return None;
         }
@@ -257,6 +257,21 @@ impl ReadyPayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReadyPayload {
+    #[serde(default)]
+    pub limit: Option<usize>,
+
+    #[serde(flatten)]
+    pub label_filter: LabelFilter,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BlockedPayload {
+    #[serde(flatten)]
+    pub label_filter: LabelFilter,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StalePayload {
     #[serde(default)]
     pub days: u32,
@@ -264,6 +279,9 @@ pub struct StalePayload {
     pub status: Option<IssueStatus>,
     #[serde(default)]
     pub limit: Option<usize>,
+
+    #[serde(flatten)]
+    pub label_filter: LabelFilter,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -444,6 +462,44 @@ mod tests {
                 .iter()
                 .any(|filter| filter.matches(IssueStatus::Todo))
         );
+    }
+
+    #[test]
+    fn label_filter_payloads_keep_flat_wire_keys() {
+        let ready: ReadyPayload = serde_json::from_value(json!({
+            "limit": 5,
+            "labels": ["project:alpha"],
+            "labels_any": ["urgent", "p:*"]
+        }))
+        .unwrap();
+        assert_eq!(ready.limit, Some(5));
+        assert_eq!(
+            ready.label_filter,
+            LabelFilter {
+                labels: Some(vec!["project:alpha".into()]),
+                labels_any: Some(vec!["urgent".into(), "p:*".into()]),
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(&ready).unwrap(),
+            json!({"limit": 5, "labels": ["project:alpha"], "labels_any": ["urgent", "p:*"]})
+        );
+
+        let stale: StalePayload =
+            serde_json::from_value(json!({"days": 3, "labels": ["a"]})).unwrap();
+        assert_eq!(stale.label_filter.labels, Some(vec!["a".into()]));
+        assert_eq!(stale.label_filter.labels_any, None);
+    }
+
+    #[test]
+    fn label_filter_payloads_accept_requests_without_labels() {
+        let blocked: BlockedPayload = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(blocked.label_filter, LabelFilter::default());
+        assert!(blocked.label_filter.to_filters().is_none());
+        assert_eq!(serde_json::to_value(&blocked).unwrap(), json!({}));
+
+        let ready: ReadyPayload = serde_json::from_value(json!({"limit": null})).unwrap();
+        assert!(ready.label_filter.to_filters().is_none());
     }
 
     #[test]

@@ -11,7 +11,9 @@ use serde_json::Value;
 
 use super::core::{Daemon, ReadScope};
 use super::git_worker::GitOp;
-use super::ipc::{ReadConsistency, Response, ResponseExt, ResponsePayload, TrackerListPayload};
+use super::ipc::{
+    ReadConsistency, Response, ResponseExt, ResponsePayload, StalePayload, TrackerListPayload,
+};
 use super::ops::{MapLiveError, OpError};
 use super::query::{Filters, QueryResult};
 use super::repl::{WalRangeError, WalRangeReader};
@@ -452,6 +454,7 @@ fn blocked_for_namespace(
     namespace: &NamespaceId,
     state: &CanonicalState,
     store_state: &StoreState,
+    label_filters: Option<&Filters>,
 ) -> Vec<BlockedIssue> {
     let blocked_by = compute_blocked_by_store(store_state);
     let mut out: Vec<BlockedIssue> = Vec::new();
@@ -466,6 +469,9 @@ fn blocked_for_namespace(
             None => continue,
         };
         if view.bead.fields.status.value.is_terminal() {
+            continue;
+        }
+        if label_filters.is_some_and(|filters| !filters.matches(&view)) {
             continue;
         }
 
@@ -490,6 +496,58 @@ fn blocked_for_namespace(
             .then_with(|| b.issue.updated_at.cmp(&a.issue.updated_at))
     });
 
+    out
+}
+
+/// Beads last updated at or before `cutoff_ms`, stalest first.
+///
+/// Terminal beads count only when `status` asks for that status. Label filters
+/// apply before the limit, like `ready`: the limit is on the filtered set.
+fn stale_for_namespace(
+    namespace: &NamespaceId,
+    state: &CanonicalState,
+    cutoff_ms: u64,
+    status: Option<IssueStatus>,
+    label_filters: Option<&Filters>,
+    limit: Option<usize>,
+) -> Vec<IssueSummary> {
+    let mut out: Vec<IssueSummary> = Vec::new();
+
+    for (id, bead) in state.iter_live() {
+        let bead_status = bead.fields.status.value;
+        if bead_status.is_terminal() && !matches!(status, Some(expected) if expected == bead_status)
+        {
+            continue;
+        }
+
+        let Some(view) = state.bead_view(id) else {
+            continue;
+        };
+
+        // Stale check.
+        let updated_ms = view.updated_stamp().at.wall_ms;
+        if updated_ms > cutoff_ms {
+            continue;
+        }
+
+        if let Some(expected) = status
+            && bead_status != expected
+        {
+            continue;
+        }
+
+        if label_filters.is_some_and(|filters| !filters.matches(&view)) {
+            continue;
+        }
+
+        out.push(IssueSummary::from_view(namespace, &view));
+    }
+
+    // Stalest first (oldest updated_at).
+    out.sort_by(|a, b| a.updated_at.cmp(&b.updated_at));
+
+    // Apply limit (go default is 50; CLI should set it, but be defensive).
+    out.truncate(limit.unwrap_or(50));
     out
 }
 
@@ -1049,11 +1107,17 @@ impl Daemon {
     pub(in crate::runtime) fn query_blocked(
         &mut self,
         repo: &Path,
+        label_filters: Option<&Filters>,
         read: ReadConsistency,
         git_tx: &Sender<GitOp>,
     ) -> Response {
         self.with_read_ctx_response(repo, read, git_tx, false, |ctx| {
-            let out = blocked_for_namespace(ctx.read.namespace(), ctx.state, ctx.store_state);
+            let out = blocked_for_namespace(
+                ctx.read.namespace(),
+                ctx.state,
+                ctx.store_state,
+                label_filters,
+            );
 
             Ok(ResponsePayload::query(QueryResult::Blocked(out)))
         })
@@ -1063,55 +1127,24 @@ impl Daemon {
     pub(in crate::runtime) fn query_stale(
         &mut self,
         repo: &Path,
-        days: u32,
-        status: Option<IssueStatus>,
-        limit: Option<usize>,
+        payload: &StalePayload,
         read: ReadConsistency,
         git_tx: &Sender<GitOp>,
     ) -> Response {
         let cutoff_ms = self
             .clock()
             .wall_ms()
-            .saturating_sub(days as u64 * 24 * 60 * 60 * 1000);
+            .saturating_sub(payload.days as u64 * 24 * 60 * 60 * 1000);
+        let label_filters = payload.label_filter.to_filters();
         self.with_read_ctx_response(repo, read, git_tx, false, |ctx| {
-            let state = ctx.state;
-
-            let mut out: Vec<IssueSummary> = Vec::new();
-
-            for (id, bead) in state.iter_live() {
-                let bead_status = bead.fields.status.value;
-                if bead_status.is_terminal()
-                    && !matches!(status, Some(expected) if expected == bead_status)
-                {
-                    continue;
-                }
-
-                let Some(view) = state.bead_view(id) else {
-                    continue;
-                };
-
-                // Stale check.
-                let updated_ms = view.updated_stamp().at.wall_ms;
-                if updated_ms > cutoff_ms {
-                    continue;
-                }
-
-                if let Some(expected) = status
-                    && bead_status != expected
-                {
-                    continue;
-                }
-
-                out.push(IssueSummary::from_view(ctx.read.namespace(), &view));
-            }
-
-            // Stalest first (oldest updated_at).
-            out.sort_by(|a, b| a.updated_at.cmp(&b.updated_at));
-
-            // Apply limit (go default is 50; CLI should set it, but be defensive).
-            let limit = limit.unwrap_or(50);
-            out.truncate(limit);
-
+            let out = stale_for_namespace(
+                ctx.read.namespace(),
+                ctx.state,
+                cutoff_ms,
+                payload.status,
+                label_filters.as_ref(),
+                payload.limit,
+            );
             Ok(ResponsePayload::query(QueryResult::Stale(out)))
         })
     }
@@ -1392,7 +1425,10 @@ fn tracker_blockers_for_issue(
 }
 #[cfg(test)]
 mod tests {
-    use super::{Filters, dep_cycles_from_state, ready_for_namespace, sort_ready_issues};
+    use super::{
+        Filters, blocked_for_namespace, dep_cycles_from_state, ready_for_namespace,
+        sort_ready_issues, stale_for_namespace,
+    };
     use super::{
         Issue, IssueSummary, field_value_from_upsert, history_entry_from_event, json_value,
         tracker_issue_from_view,
@@ -1779,6 +1815,83 @@ mod tests {
         // comes first; limiting before filtering would return nothing.
         let (ids, _, _) = ready_ids(&store, Some(&beta), Some(1));
         assert_eq!(ids, vec!["bd-beta"]);
+    }
+
+    fn blocked_ids(store: &crate::core::StoreState, filters: Option<&Filters>) -> Vec<String> {
+        blocked_for_namespace(&NamespaceId::core(), store.core(), store, filters)
+            .into_iter()
+            .map(|blocked| blocked.issue.id)
+            .collect()
+    }
+
+    #[test]
+    fn blocked_label_filters_scope_blocked_beads() {
+        let store = labeled_ready_store();
+        // bd-alpha-wait [project:alpha] is the only blocked bead.
+        assert_eq!(blocked_ids(&store, None), vec!["bd-alpha-wait"]);
+
+        let alpha = label_filters(&["project:alpha"], &[]);
+        assert_eq!(blocked_ids(&store, Some(&alpha)), vec!["bd-alpha-wait"]);
+
+        // The blocker's label does not count: bd-beta blocks, it is not blocked.
+        let beta = label_filters(&["project:beta"], &[]);
+        assert!(blocked_ids(&store, Some(&beta)).is_empty());
+
+        let any = label_filters(&[], &["urgent", "project:*"]);
+        assert_eq!(blocked_ids(&store, Some(&any)), vec!["bd-alpha-wait"]);
+
+        let alpha_urgent = label_filters(&["project:alpha", "urgent"], &[]);
+        assert!(blocked_ids(&store, Some(&alpha_urgent)).is_empty());
+    }
+
+    fn stale_ids(
+        store: &crate::core::StoreState,
+        filters: Option<&Filters>,
+        limit: Option<usize>,
+    ) -> Vec<String> {
+        // Every fixture bead was last updated at wall 4_000, so all are stale.
+        stale_for_namespace(
+            &NamespaceId::core(),
+            store.core(),
+            u64::MAX,
+            None,
+            filters,
+            limit,
+        )
+        .into_iter()
+        .map(|issue| issue.id)
+        .collect()
+    }
+
+    #[test]
+    fn stale_label_filters_scope_open_beads() {
+        let store = labeled_ready_store();
+        let mut all = stale_ids(&store, None, None);
+        all.sort();
+        assert_eq!(
+            all,
+            vec!["bd-alpha", "bd-alpha-wait", "bd-beta", "bd-both", "bd-none"]
+        );
+
+        let alpha = label_filters(&["project:alpha"], &[]);
+        let mut ids = stale_ids(&store, Some(&alpha), None);
+        ids.sort();
+        assert_eq!(ids, vec!["bd-alpha", "bd-alpha-wait", "bd-both"]);
+
+        let any = label_filters(&[], &["project:beta", "urgent"]);
+        let mut ids = stale_ids(&store, Some(&any), None);
+        ids.sort();
+        assert_eq!(ids, vec!["bd-beta", "bd-both"]);
+    }
+
+    #[test]
+    fn stale_label_filter_applies_before_limit() {
+        let store = labeled_ready_store();
+        let beta = label_filters(&["project:beta"], &[]);
+        // Ties on updated_at keep id order, so bd-alpha comes first;
+        // limiting before filtering would return nothing.
+        assert_eq!(stale_ids(&store, None, Some(1)), vec!["bd-alpha"]);
+        assert_eq!(stale_ids(&store, Some(&beta), Some(1)), vec!["bd-beta"]);
     }
 
     #[test]

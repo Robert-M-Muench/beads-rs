@@ -51,6 +51,25 @@ ready:
   -n, --limit
   --json
 
+blocked:
+  -l, --label
+  --label-any
+  --json
+
+stale:
+  -d, --days
+  -s, --status
+  -l, --label
+  --label-any
+  -n, --limit
+  --json
+
+search <query>:
+  -l, --label
+  --label-any
+  -n, --limit
+  --json
+
 update:
   --title
   -d, --description

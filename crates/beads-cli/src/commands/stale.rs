@@ -5,6 +5,7 @@ use clap::Args;
 
 use super::common::fmt_issue_ref;
 use super::{CommandResult, print_ok};
+use crate::filters::LabelFilterArgs;
 use crate::runtime::{CliRuntimeCtx, send};
 
 #[derive(Args, Debug)]
@@ -20,6 +21,9 @@ pub struct StaleArgs {
     /// Maximum issues to show.
     #[arg(short = 'n', long, default_value_t = 50)]
     pub limit: usize,
+
+    #[command(flatten)]
+    pub label_filter: LabelFilterArgs,
 }
 
 pub fn handle(ctx: &CliRuntimeCtx, args: StaleArgs) -> CommandResult<()> {
@@ -29,6 +33,7 @@ pub fn handle(ctx: &CliRuntimeCtx, args: StaleArgs) -> CommandResult<()> {
             days: args.days,
             status: args.status,
             limit: Some(args.limit),
+            label_filter: args.label_filter.to_payload(),
         },
     };
     let ok = send(&req)?;

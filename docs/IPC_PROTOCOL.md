@@ -10,7 +10,7 @@ JSON object terminated by `\n`. Each response is either:
 The protocol version is tracked in `crates/beads-surface/src/ipc/types.rs` as
 `IPC_PROTOCOL_VERSION`.
 
-Current version: **3**.
+Current version: **4**.
 
 ## Requests
 Requests are tagged by `op`:
@@ -54,3 +54,11 @@ to:
 ```
 
 This is a breaking change and is the reason for the protocol bump to version 3.
+
+### Version 4: label filters on `blocked` and `stale`
+`blocked` and `stale` requests take optional `labels` (ALL) and `labels_any` (AT LEAST
+ONE) arrays, matched like `list` filters (`*` is a wildcard). `ready` already took the
+same fields in version 3; its wire format is unchanged. The new fields are additive, but
+a version 3 daemon ignores them on `blocked` and `stale` and still returns every blocked
+or stale bead, whatever its labels. The version changed so the client's handshake sees
+the mismatch and restarts that daemon instead of accepting the unscoped answer.
