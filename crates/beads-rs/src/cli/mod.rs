@@ -37,6 +37,7 @@ impl CliHost for BeadsRsCliHost {
         Ok(CliRuntimeCtx {
             repo,
             json: args.json,
+            quiet: args.quiet,
             namespace: resolve_namespace(args.namespace.as_deref(), &config)?,
             durability: resolve_durability(args.durability.as_deref(), &config)?,
             client_request_id: normalize_optional_client_request_id(
@@ -45,6 +46,9 @@ impl CliHost for BeadsRsCliHost {
             require_min_seen: parse_require_min_seen(args.require_min_seen.as_deref())?,
             wait_timeout_ms: args.wait_timeout_ms,
             actor_id: resolve_actor_override(args.actor.as_deref())?,
+            default_labels: (!args.no_default_labels)
+                .then(|| config.defaults.labels.clone())
+                .flatten(),
         })
     }
 
@@ -294,13 +298,8 @@ mod tests {
         let actor = ActorId::new("alice@example.com").unwrap();
         let ctx = CliRuntimeCtx {
             repo: PathBuf::from("/tmp/beads"),
-            json: false,
-            namespace: None,
-            durability: None,
-            client_request_id: None,
-            require_min_seen: None,
-            wait_timeout_ms: None,
             actor_id: Some(actor.clone()),
+            ..Default::default()
         };
         let meta = ctx.mutation_meta();
         assert_eq!(meta.actor_id, Some(actor));
@@ -344,13 +343,9 @@ mod tests {
             .expect("watermark");
         let ctx = CliRuntimeCtx {
             repo: PathBuf::from("/tmp/beads"),
-            json: false,
-            namespace: None,
-            durability: None,
-            client_request_id: None,
             require_min_seen: Some(watermarks.clone()),
             wait_timeout_ms: Some(50),
-            actor_id: None,
+            ..Default::default()
         };
         let read = ctx.read_consistency();
         assert_eq!(read.require_min_seen, Some(watermarks));

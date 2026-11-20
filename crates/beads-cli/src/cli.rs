@@ -67,6 +67,10 @@ pub struct Cli {
     #[arg(long = "wait-timeout-ms", global = true, value_name = "MS")]
     pub wait_timeout_ms: Option<u64>,
 
+    /// Ignore the default label filter (BD_LABEL or `[defaults] labels`) for this invocation.
+    #[arg(long = "no-default-labels", global = true)]
+    pub no_default_labels: bool,
+
     /// Errors only.
     #[arg(
         short = 'q',
@@ -125,7 +129,7 @@ pub enum Command {
     Ready(commands::ready::ReadyArgs),
 
     /// Show blocked issues.
-    Blocked,
+    Blocked(commands::blocked::BlockedArgs),
 
     /// Show stale issues (not updated recently).
     Stale(commands::stale::StaleArgs),
@@ -258,6 +262,8 @@ pub struct RuntimeBuildArgs {
     pub client_request_id: Option<String>,
     pub require_min_seen: Option<String>,
     pub wait_timeout_ms: Option<u64>,
+    pub no_default_labels: bool,
+    pub quiet: bool,
 }
 
 pub trait CliHost {
@@ -295,7 +301,7 @@ pub fn command_name(command: &Command) -> String {
         Command::Log(_) => "log".to_string(),
         Command::Search(_) => "search".to_string(),
         Command::Ready(_) => "ready".to_string(),
-        Command::Blocked => "blocked".to_string(),
+        Command::Blocked(_) => "blocked".to_string(),
         Command::Stale(_) => "stale".to_string(),
         Command::Count(_) => "count".to_string(),
         Command::Deleted(_) => "deleted".to_string(),
@@ -354,7 +360,8 @@ where
         client_request_id,
         require_min_seen,
         wait_timeout_ms,
-        quiet: _,
+        no_default_labels,
+        quiet,
         verbose: _,
         command,
     } = cli;
@@ -378,6 +385,8 @@ where
                 client_request_id,
                 require_min_seen,
                 wait_timeout_ms,
+                no_default_labels,
+                quiet,
             })?;
             dispatch_with_runtime::<H, B>(cmd, &runtime, backend)
         }
@@ -402,7 +411,7 @@ where
         Command::Log(args) => commands::log::handle(ctx, args).map_err(Into::into),
         Command::Search(args) => commands::search::handle(ctx, args).map_err(Into::into),
         Command::Ready(args) => commands::ready::handle(ctx, args).map_err(Into::into),
-        Command::Blocked => commands::blocked::handle(ctx).map_err(Into::into),
+        Command::Blocked(args) => commands::blocked::handle(ctx, args).map_err(Into::into),
         Command::Stale(args) => commands::stale::handle(ctx, args).map_err(Into::into),
         Command::Count(args) => commands::count::handle(ctx, args).map_err(Into::into),
         Command::Deleted(args) => commands::deleted::handle(ctx, args).map_err(Into::into),

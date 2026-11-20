@@ -843,13 +843,7 @@ mod tests {
         let ids = resolve_show_ids(
             &CliRuntimeCtx {
                 repo: std::path::PathBuf::from("/tmp/beads"),
-                json: false,
-                namespace: None,
-                durability: None,
-                client_request_id: None,
-                require_min_seen: None,
-                wait_timeout_ms: None,
-                actor_id: None,
+                ..Default::default()
             },
             Vec::new(),
             vec!["beads-rs-k8u3".to_string(), "beads-rs-k8u3.5".to_string()],

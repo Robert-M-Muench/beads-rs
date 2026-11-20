@@ -54,6 +54,20 @@ fn cli_issue_array_json(value: &serde_json::Value) -> &[serde_json::Value] {
     value.as_array().expect("CLI JSON issue array")
 }
 
+/// Sorted titles from a CLI `--json` issue list; `blocked` entries nest the bead under `issue`.
+fn cli_sorted_titles(stdout: &[u8]) -> Vec<String> {
+    let value: serde_json::Value = serde_json::from_slice(stdout).expect("CLI JSON");
+    let mut titles: Vec<String> = cli_issue_array_json(&value)
+        .iter()
+        .map(|item| {
+            let issue = item.get("issue").unwrap_or(item);
+            issue["title"].as_str().expect("title").to_string()
+        })
+        .collect();
+    titles.sort();
+    titles
+}
+
 #[cfg(feature = "slow-tests")]
 fn cli_wall_ms_json(value: &serde_json::Value) -> i128 {
     if let Some(ms) = value.as_u64() {
@@ -99,6 +113,17 @@ fn wait_for_wal_segments(wal_dir: &Path, timeout: Duration) -> Vec<PathBuf> {
 struct TestRepo(BdRuntimeRepo);
 
 impl TestRepo {
+    /// Creates a task with comma-separated `labels` (`""` for none) and returns its id.
+    fn create_labeled_task(&self, title: &str, labels: &str) -> String {
+        let mut cmd = self.bd();
+        cmd.args(["create", title, "--type=task", "--json"]);
+        if !labels.is_empty() {
+            cmd.args(["--labels", labels]);
+        }
+        let output = cmd.assert().success().get_output().stdout.clone();
+        cli_issue_id_from_output(&output)
+    }
+
     fn new() -> Self {
         Self(BdRuntimeRepo::new_with_origin().with_runtime_derived_store_id())
     }
@@ -321,25 +346,345 @@ fn test_dependencies() {
 }
 
 #[test]
+fn test_blocked_stale_search_label_filters() {
+    let repo = TestRepo::new();
+    repo.bd().arg("init").assert().success();
+
+    let alpha_blocker = repo.create_labeled_task("Alpha blocker", "project:alpha");
+    let beta_blocker = repo.create_labeled_task("Beta blocker", "project:beta");
+    let alpha_wait = repo.create_labeled_task("Alpha waiting", "project:alpha,urgent");
+    let beta_wait = repo.create_labeled_task("Beta waiting", "project:beta");
+    let plain_wait = repo.create_labeled_task("Plain waiting", "");
+    for (from, to) in [
+        (&alpha_wait, &alpha_blocker),
+        (&beta_wait, &beta_blocker),
+        (&plain_wait, &alpha_blocker),
+    ] {
+        repo.bd().args(["dep", "add", from, to]).assert().success();
+    }
+
+    let titles = |cmd: &[&str], args: &[&str]| -> Vec<String> {
+        let output = repo
+            .bd()
+            .args(cmd)
+            .args(args)
+            .arg("--json")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        cli_sorted_titles(&output)
+    };
+
+    // blocked: the blocked bead's labels count, not its blocker's.
+    assert_eq!(
+        titles(&["blocked"], &[]),
+        vec!["Alpha waiting", "Beta waiting", "Plain waiting"]
+    );
+    assert_eq!(
+        titles(&["blocked"], &["-l", "project:alpha"]),
+        vec!["Alpha waiting"]
+    );
+    assert_eq!(
+        titles(&["blocked"], &["--label-any", "urgent,project:beta"]),
+        vec!["Alpha waiting", "Beta waiting"]
+    );
+    assert_eq!(
+        titles(&["blocked"], &["-l", "project:*"]),
+        vec!["Alpha waiting", "Beta waiting"]
+    );
+
+    // stale: --days 0 makes every open bead stale; the limit applies after the filter.
+    assert_eq!(titles(&["stale", "--days=0"], &[]).len(), 5);
+    assert_eq!(
+        titles(&["stale", "--days=0"], &["-l", "project:beta"]),
+        vec!["Beta blocker", "Beta waiting"]
+    );
+    assert_eq!(
+        titles(
+            &["stale", "--days=0"],
+            &["-l", "project:alpha", "-l", "urgent"]
+        ),
+        vec!["Alpha waiting"]
+    );
+    assert_eq!(
+        titles(&["stale", "--days=0", "-n", "1"], &["-l", "urgent"]),
+        vec!["Alpha waiting"]
+    );
+
+    // search: text and label constraints combine.
+    assert_eq!(
+        titles(&["search", "waiting"], &[]),
+        vec!["Alpha waiting", "Beta waiting", "Plain waiting"]
+    );
+    assert_eq!(
+        titles(&["search", "waiting"], &["-l", "project:beta"]),
+        vec!["Beta waiting"]
+    );
+    assert_eq!(
+        titles(&["search", "blocker"], &["--label-any", "project:*"]),
+        vec!["Alpha blocker", "Beta blocker"]
+    );
+    assert!(titles(&["search", "blocker"], &["-l", "urgent"]).is_empty());
+    // A label flag takes one value, so a query after it stays the query.
+    assert_eq!(
+        titles(&["search", "-l", "project:beta", "waiting"], &[]),
+        vec!["Beta waiting"]
+    );
+    assert_eq!(
+        titles(&["list", "-l", "project:alpha", "waiting"], &[]),
+        vec!["Alpha waiting"]
+    );
+}
+
+#[test]
+fn test_default_label_filter_from_bd_label() {
+    let repo = TestRepo::new();
+    repo.bd().arg("init").assert().success();
+
+    let alpha = repo.create_labeled_task("Alpha task", "project:alpha");
+    repo.create_labeled_task("Beta task", "project:beta");
+    repo.create_labeled_task("Plain task", "");
+    let alpha_wait = repo.create_labeled_task("Alpha waiting", "project:alpha");
+    repo.bd()
+        .args(["dep", "add", &alpha_wait, &alpha])
+        .assert()
+        .success();
+
+    // `bd <cmd> --json` titles with BD_LABEL set to `bd_label` (None: unset).
+    let titles = |bd_label: Option<&str>, cmd: &[&str]| -> Vec<String> {
+        let mut bd = repo.bd();
+        if let Some(value) = bd_label {
+            bd.env("BD_LABEL", value);
+        }
+        let output = bd
+            .args(cmd)
+            .arg("--json")
+            .assert()
+            .success()
+            .get_output()
+            .clone();
+        assert!(
+            !String::from_utf8_lossy(&output.stderr).contains("default label filter"),
+            "--json must not print the default-filter note"
+        );
+        cli_sorted_titles(&output.stdout)
+    };
+    let alpha_label = Some("project:alpha");
+
+    // Every listing command picks up the default.
+    assert_eq!(titles(alpha_label, &["ready"]), vec!["Alpha task"]);
+    assert_eq!(
+        titles(alpha_label, &["list"]),
+        vec!["Alpha task", "Alpha waiting"]
+    );
+    assert_eq!(titles(alpha_label, &["blocked"]), vec!["Alpha waiting"]);
+    assert_eq!(
+        titles(alpha_label, &["stale", "--days=0"]),
+        vec!["Alpha task", "Alpha waiting"]
+    );
+    assert_eq!(titles(alpha_label, &["search", "task"]), vec!["Alpha task"]);
+    repo.bd()
+        .env("BD_LABEL", "project:alpha")
+        .args(["count", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"count\": 2"));
+    // Comma lists and wildcards work as for -l.
+    assert_eq!(
+        titles(Some(" project:* , project:beta "), &["ready"]),
+        vec!["Beta task"]
+    );
+
+    // Explicit label flags replace the default instead of adding to it.
+    assert_eq!(
+        titles(alpha_label, &["ready", "-l", "project:beta"]),
+        vec!["Beta task"]
+    );
+    assert_eq!(
+        titles(alpha_label, &["list", "--label-any", "project:beta"]),
+        vec!["Beta task"]
+    );
+    assert_eq!(
+        titles(alpha_label, &["list", "--no-labels"]),
+        vec!["Plain task"]
+    );
+
+    // --no-default-labels (anywhere on the line) and an empty BD_LABEL show everything.
+    let all_ready = vec!["Alpha task", "Beta task", "Plain task"];
+    assert_eq!(titles(None, &["ready"]), all_ready);
+    assert_eq!(
+        titles(alpha_label, &["ready", "--no-default-labels"]),
+        all_ready
+    );
+    assert_eq!(
+        titles(alpha_label, &["--no-default-labels", "ready"]),
+        all_ready
+    );
+    assert_eq!(titles(Some(""), &["ready"]), all_ready);
+
+    // Human output names the default on stderr, never on stdout.
+    repo.bd()
+        .env("BD_LABEL", "project:alpha")
+        .arg("ready")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Alpha task"))
+        .stdout(predicate::str::contains("default label filter").not())
+        .stderr(predicate::str::contains(
+            "default label filter -l project:alpha",
+        ));
+    repo.bd()
+        .env("BD_LABEL", "project:alpha")
+        .args(["ready", "-l", "project:beta"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("default label filter").not());
+    // --quiet keeps the filter but drops the note.
+    repo.bd()
+        .env("BD_LABEL", "project:alpha")
+        .args(["ready", "-q"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Alpha task"))
+        .stdout(predicate::str::contains("Beta task").not())
+        .stderr(predicate::str::contains("default label filter").not());
+
+    // A label flag needs a value: an empty one is an error, never a silent fallback
+    // to the default.
+    for args in [
+        &["ready", "--label-any"][..],
+        &["ready", "-l", ""],
+        &["list", "-l", "a,,b"],
+    ] {
+        repo.bd()
+            .env("BD_LABEL", "project:alpha")
+            .args(args)
+            .assert()
+            .failure();
+    }
+}
+
+#[test]
+fn test_create_adds_default_labels() {
+    let repo = TestRepo::new();
+    repo.bd().arg("init").assert().success();
+    let scope = "project:alpha,team:*";
+
+    // Sorted labels of the bead `bd create <args> --json` made, with BD_LABEL=scope.
+    let created_labels = |args: &[&str]| -> Vec<String> {
+        let output = repo
+            .bd()
+            .env("BD_LABEL", scope)
+            .arg("create")
+            .args(args)
+            .arg("--json")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let value: serde_json::Value = serde_json::from_slice(&output).expect("CLI JSON");
+        // No labels: the field is omitted.
+        let mut labels: Vec<String> = cli_single_issue_json(&value)["labels"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|label| label.as_str().expect("label").to_string())
+            .collect();
+        labels.sort();
+        labels
+    };
+
+    // The literal default is added, on top of explicit labels; the wildcard is not.
+    assert_eq!(created_labels(&["Scoped"]), ["project:alpha"]);
+    assert_eq!(
+        created_labels(&["Scoped bug", "-l", "bug"]),
+        ["bug", "project:alpha"]
+    );
+    assert_eq!(
+        created_labels(&["Repeated", "-l", "project:alpha"]),
+        ["project:alpha"]
+    );
+    assert!(created_labels(&["Unscoped", "--no-default-labels"]).is_empty());
+
+    // Each bead of a markdown file gets it too, with its own labels and the command's -l.
+    let plan = repo.path().join("plan.md");
+    std::fs::write(
+        &plan,
+        "## From file\n\n### Labels\nfile-label\n\n## Also from file\n",
+    )
+    .expect("write plan");
+    repo.bd()
+        .env("BD_LABEL", scope)
+        .args(["create", "-l", "batch", "-f"])
+        .arg(&plan)
+        .assert()
+        .success();
+
+    // Human output names what was added and skipped, on stderr.
+    repo.bd()
+        .env("BD_LABEL", scope)
+        .args(["create", "Noted"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "adding default labels project:alpha; not adding wildcard team:*",
+        ));
+
+    // Every scoped bead shows in the scoped ready list; the unscoped one does not.
+    let output = repo
+        .bd()
+        .env("BD_LABEL", "project:alpha")
+        .args(["ready", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(
+        cli_sorted_titles(&output),
+        [
+            "Also from file",
+            "From file",
+            "Noted",
+            "Repeated",
+            "Scoped",
+            "Scoped bug"
+        ]
+    );
+    let output = repo
+        .bd()
+        .args(["ready", "-l", "file-label", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(cli_sorted_titles(&output), ["From file"]);
+    let output = repo
+        .bd()
+        .args(["ready", "-l", "batch", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(cli_sorted_titles(&output), ["Also from file", "From file"]);
+}
+
+#[test]
 fn test_ready_label_filters() {
     let repo = TestRepo::new();
     repo.bd().arg("init").assert().success();
 
-    let create = |title: &str, labels: &str| {
-        let mut cmd = repo.bd();
-        cmd.args(["create", title, "--type=task", "--json"]);
-        if !labels.is_empty() {
-            cmd.args(["--labels", labels]);
-        }
-        let output = cmd.assert().success().get_output().stdout.clone();
-        cli_issue_id_from_output(&output)
-    };
-    create("Alpha only", "project:alpha");
-    create("Alpha urgent", "project:alpha,urgent");
-    let beta = create("Beta only", "project:beta");
-    create("Unlabeled", "");
-    let alpha_done = create("Alpha done", "project:alpha");
-    let alpha_wait = create("Alpha waiting", "project:alpha");
+    repo.create_labeled_task("Alpha only", "project:alpha");
+    repo.create_labeled_task("Alpha urgent", "project:alpha,urgent");
+    let beta = repo.create_labeled_task("Beta only", "project:beta");
+    repo.create_labeled_task("Unlabeled", "");
+    let alpha_done = repo.create_labeled_task("Alpha done", "project:alpha");
+    let alpha_wait = repo.create_labeled_task("Alpha waiting", "project:alpha");
     repo.bd().args(["close", &alpha_done]).assert().success();
     repo.bd()
         .args(["dep", "add", &alpha_wait, &beta])
@@ -357,13 +702,7 @@ fn test_ready_label_filters() {
             .get_output()
             .stdout
             .clone();
-        let value: serde_json::Value = serde_json::from_slice(&output).expect("ready JSON");
-        let mut titles: Vec<String> = cli_issue_array_json(&value)
-            .iter()
-            .map(|issue| issue["title"].as_str().expect("title").to_string())
-            .collect();
-        titles.sort();
-        titles
+        cli_sorted_titles(&output)
     };
 
     // -l / --label: must have ALL, repeated or comma-separated.

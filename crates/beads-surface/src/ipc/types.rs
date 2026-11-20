@@ -13,7 +13,7 @@ use super::{ctx::*, payload::*};
 
 use crate::ops::OpResult;
 
-pub const IPC_PROTOCOL_VERSION: u32 = 3;
+pub const IPC_PROTOCOL_VERSION: u32 = 4;
 
 // =============================================================================
 // Request - All IPC requests
@@ -425,7 +425,7 @@ pub enum Request {
         #[serde(flatten)]
         ctx: ReadCtx,
         #[serde(flatten)]
-        payload: EmptyPayload,
+        payload: BlockedPayload,
     },
 
     /// Get stale issues.

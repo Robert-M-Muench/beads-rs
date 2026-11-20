@@ -62,16 +62,21 @@ pub enum RuntimeError {
 }
 
 /// Typed CLI runtime context shared by command handlers.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct CliRuntimeCtx {
     pub repo: PathBuf,
     pub json: bool,
+    /// `-q/--quiet`: errors only, so no diagnostic notes on stderr.
+    pub quiet: bool,
     pub namespace: Option<NamespaceId>,
     pub durability: Option<DurabilityClass>,
     pub client_request_id: Option<ClientRequestId>,
     pub require_min_seen: Option<Watermarks<Applied>>,
     pub wait_timeout_ms: Option<u64>,
     pub actor_id: Option<ActorId>,
+    /// Default `-l/--label` filter (`BD_LABEL` or `[defaults] labels`) for the
+    /// commands that list beads; `None` when unset or `--no-default-labels`.
+    pub default_labels: Option<Vec<String>>,
 }
 
 impl CliRuntimeCtx {
@@ -199,13 +204,8 @@ mod tests {
         let actor = ActorId::new("alice@example.com").expect("actor");
         let ctx = CliRuntimeCtx {
             repo: PathBuf::from("/tmp/beads"),
-            json: false,
-            namespace: None,
-            durability: None,
-            client_request_id: None,
-            require_min_seen: None,
-            wait_timeout_ms: None,
             actor_id: Some(actor.clone()),
+            ..Default::default()
         };
         let meta = ctx.mutation_meta();
         assert_eq!(meta.actor_id, Some(actor));
@@ -225,13 +225,9 @@ mod tests {
             .expect("watermark");
         let ctx = CliRuntimeCtx {
             repo: PathBuf::from("/tmp/beads"),
-            json: false,
-            namespace: None,
-            durability: None,
-            client_request_id: None,
             require_min_seen: Some(watermarks.clone()),
             wait_timeout_ms: Some(50),
-            actor_id: None,
+            ..Default::default()
         };
         let read = ctx.read_consistency();
         assert_eq!(read.require_min_seen, Some(watermarks));

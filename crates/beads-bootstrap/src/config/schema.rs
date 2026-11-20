@@ -48,6 +48,9 @@ pub struct DefaultsConfig {
     pub durability: Option<DurabilityClass>,
     pub actor: Option<ActorId>,
     pub client_request_id: Option<ClientRequestId>,
+    /// Default `-l/--label` filter (ALL of these) for the commands that list beads.
+    /// Explicit label flags replace it; `--no-default-labels` ignores it.
+    pub labels: Option<Vec<String>>,
 }
 
 impl DefaultsConfig {
@@ -63,6 +66,9 @@ impl DefaultsConfig {
         }
         if self.client_request_id.is_some() {
             target.client_request_id = self.client_request_id;
+        }
+        if self.labels.is_some() {
+            target.labels = self.labels.clone();
         }
     }
 }

@@ -44,7 +44,7 @@ pub struct CountArgs {
 
 pub fn handle(ctx: &CliRuntimeCtx, args: CountArgs) -> CommandResult<()> {
     let mut filters = Filters::default();
-    apply_common_filters(&args.common, &mut filters)?;
+    apply_common_filters(&args.common, ctx, &mut filters)?;
 
     if let Some(title) = args.title.clone()
         && !title.trim().is_empty()

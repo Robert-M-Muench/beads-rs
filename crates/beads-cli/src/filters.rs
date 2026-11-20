@@ -1,6 +1,10 @@
 use beads_core::{ActorId, BeadType, CoreError, Priority};
 use beads_surface::Filters;
+use beads_surface::ipc::LabelFilter;
+
+use crate::runtime::CliRuntimeCtx;
 use clap::Args;
+use clap::builder::NonEmptyStringValueParser;
 
 use super::parsers::{parse_bead_type, parse_priority, parse_status, parse_time_ms};
 
@@ -22,29 +26,73 @@ pub fn validation_error(field: impl Into<String>, reason: impl Into<String>) -> 
     }
 }
 
-/// Label filter flags shared by `list`, `count` and `ready`.
+/// Label filter flags shared by `list`, `count`, `ready`, `blocked`, `stale` and `search`.
 #[derive(Args, Debug, Clone)]
 pub struct LabelFilterArgs {
+    // One value per occurrence: a variadic flag would swallow a following positional
+    // (`bd search -l x timeout`) and could be given with no value at all.
     /// Filter by labels (AND: must have ALL). Repeat or comma-separated; `*` is a
     /// wildcard (`-l '*3d-sim*'`), otherwise labels match exactly.
-    #[arg(short = 'l', long = "label", alias = "labels", value_delimiter = ',', num_args = 0..)]
+    #[arg(
+        short = 'l',
+        long = "label",
+        alias = "labels",
+        value_delimiter = ',',
+        value_parser = NonEmptyStringValueParser::new()
+    )]
     pub labels: Vec<String>,
 
     /// Filter by labels (OR: must have AT LEAST ONE). Repeat or comma-separated; `*`
     /// is a wildcard, otherwise labels match exactly.
-    #[arg(long = "label-any", value_delimiter = ',', num_args = 0..)]
+    #[arg(
+        long = "label-any",
+        value_delimiter = ',',
+        value_parser = NonEmptyStringValueParser::new()
+    )]
     pub labels_any: Vec<String>,
 }
 
+/// The one stderr note for a default label (`BD_LABEL` / `[defaults] labels`) in effect:
+/// `what` it did, and what `--no-default-labels` would do instead. Human mode only (not
+/// `--json`, not `--quiet`), so stdout and machine output stay clean.
+pub(crate) fn note_default_labels(ctx: &CliRuntimeCtx, what: &str, opt_out: &str) {
+    if !ctx.json && !ctx.quiet {
+        eprintln!("note: {what} (BD_LABEL or [defaults] labels); --no-default-labels {opt_out}");
+    }
+}
+
 impl LabelFilterArgs {
-    /// The AND label set, or `None` when no `--label` was given.
-    pub fn labels(&self) -> Option<Vec<String>> {
-        non_empty(&self.labels)
+    /// The effective label constraint: the flags when any is given, otherwise the
+    /// runtime's default labels (`BD_LABEL` / `[defaults] labels`) as `--label`.
+    ///
+    /// Explicit flags replace the default rather than adding to it; each flag needs a
+    /// value, so "given" and "non-empty" coincide. In human mode (not `--json`, not
+    /// `--quiet`) a default in effect is noted on stderr, so filtered-out beads never
+    /// look lost.
+    pub fn resolve(&self, ctx: &CliRuntimeCtx) -> LabelFilter {
+        if !self.labels.is_empty() || !self.labels_any.is_empty() {
+            return self.explicit();
+        }
+        let Some(defaults) = &ctx.default_labels else {
+            return LabelFilter::default();
+        };
+        note_default_labels(
+            ctx,
+            &format!("default label filter -l {}", defaults.join(",")),
+            "shows all",
+        );
+        LabelFilter {
+            labels: Some(defaults.clone()),
+            labels_any: None,
+        }
     }
 
-    /// The OR label set, or `None` when no `--label-any` was given.
-    pub fn labels_any(&self) -> Option<Vec<String>> {
-        non_empty(&self.labels_any)
+    /// The flags as given, without the default.
+    fn explicit(&self) -> LabelFilter {
+        LabelFilter {
+            labels: non_empty(&self.labels),
+            labels_any: non_empty(&self.labels_any),
+        }
     }
 }
 
@@ -134,15 +182,25 @@ pub struct CommonFilterArgs {
     pub no_labels: bool,
 }
 
-pub fn apply_common_filters(args: &CommonFilterArgs, filters: &mut Filters) -> Result<()> {
+pub fn apply_common_filters(
+    args: &CommonFilterArgs,
+    ctx: &CliRuntimeCtx,
+    filters: &mut Filters,
+) -> Result<()> {
     filters.status = args.status;
     filters.priority = args.priority;
     filters.priority_min = args.priority_min;
     filters.priority_max = args.priority_max;
     filters.bead_type = args.bead_type;
     filters.assignee = args.assignee.as_deref().map(ActorId::new).transpose()?;
-    filters.labels = args.label_filter.labels();
-    filters.labels_any = args.label_filter.labels_any();
+    // `--no-labels` is a label constraint of its own, so it also replaces the default.
+    let label_filter = if args.no_labels {
+        args.label_filter.explicit()
+    } else {
+        args.label_filter.resolve(ctx)
+    };
+    filters.labels = label_filter.labels;
+    filters.labels_any = label_filter.labels_any;
     filters.title_contains = args.title_contains.clone().filter(|s| !s.trim().is_empty());
     filters.desc_contains = args.desc_contains.clone().filter(|s| !s.trim().is_empty());
     filters.notes_contains = args.notes_contains.clone().filter(|s| !s.trim().is_empty());
@@ -169,4 +227,71 @@ fn parse_time_ms_opt(raw: Option<&str>) -> Result<Option<u64>> {
     parse_time_ms(trimmed)
         .map(Some)
         .map_err(|err| validation_error("date", err.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Probe {
+        #[command(flatten)]
+        common: CommonFilterArgs,
+    }
+
+    fn ctx(default_labels: Option<&[&str]>) -> CliRuntimeCtx {
+        CliRuntimeCtx {
+            // JSON mode keeps the default-filter note off the test's stderr.
+            json: true,
+            default_labels: default_labels
+                .map(|labels| labels.iter().map(|label| label.to_string()).collect()),
+            ..Default::default()
+        }
+    }
+
+    fn filters(args: &[&str], ctx: &CliRuntimeCtx) -> Filters {
+        let probe = Probe::parse_from(std::iter::once("probe").chain(args.iter().copied()));
+        let mut filters = Filters::default();
+        apply_common_filters(&probe.common, ctx, &mut filters).expect("filters");
+        filters
+    }
+
+    fn owned(values: &[&str]) -> Option<Vec<String>> {
+        Some(values.iter().map(|value| value.to_string()).collect())
+    }
+
+    #[test]
+    fn default_labels_apply_only_without_label_flags() {
+        let scoped = ctx(Some(&["project:a", "p:*"]));
+
+        let f = filters(&[], &scoped);
+        assert_eq!(f.labels, owned(&["project:a", "p:*"]));
+        assert_eq!(f.labels_any, None);
+
+        // Every explicit label constraint replaces the default instead of adding to it.
+        let f = filters(&["-l", "urgent"], &scoped);
+        assert_eq!(f.labels, owned(&["urgent"]));
+        assert_eq!(f.labels_any, None);
+
+        let f = filters(&["--label-any", "x,y"], &scoped);
+        assert_eq!(f.labels, None);
+        assert_eq!(f.labels_any, owned(&["x", "y"]));
+
+        let f = filters(&["--no-labels"], &scoped);
+        assert_eq!((f.labels, f.labels_any, f.no_labels), (None, None, true));
+
+        // Non-label filters keep the default.
+        let f = filters(&["-s", "todo"], &scoped);
+        assert_eq!(f.labels, owned(&["project:a", "p:*"]));
+    }
+
+    #[test]
+    fn no_default_labels_means_no_label_constraint() {
+        let f = filters(&[], &ctx(None));
+        assert_eq!((f.labels, f.labels_any), (None, None));
+
+        let f = filters(&["-l", "urgent"], &ctx(None));
+        assert_eq!(f.labels, owned(&["urgent"]));
+    }
 }

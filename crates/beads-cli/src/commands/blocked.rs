@@ -1,13 +1,23 @@
-use beads_surface::ipc::{EmptyPayload, Request};
+use beads_surface::ipc::{BlockedPayload, Request};
+use clap::Args;
 
 use super::common::fmt_issue_ref;
 use super::{CommandResult, print_ok};
+use crate::filters::LabelFilterArgs;
 use crate::runtime::{CliRuntimeCtx, send};
 
-pub fn handle(ctx: &CliRuntimeCtx) -> CommandResult<()> {
+#[derive(Args, Debug)]
+pub struct BlockedArgs {
+    #[command(flatten)]
+    pub label_filter: LabelFilterArgs,
+}
+
+pub fn handle(ctx: &CliRuntimeCtx, args: BlockedArgs) -> CommandResult<()> {
     let req = Request::Blocked {
         ctx: ctx.read_ctx(),
-        payload: EmptyPayload {},
+        payload: BlockedPayload {
+            label_filter: args.label_filter.resolve(ctx),
+        },
     };
     let ok = send(&req)?;
     print_ok(&ok, ctx.json)

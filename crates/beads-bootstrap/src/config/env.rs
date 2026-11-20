@@ -1,6 +1,8 @@
 pub const CONFIG_DIR_VAR: &str = "BD_CONFIG_DIR";
 pub const NO_AUTO_UPGRADE_VAR: &str = "BD_NO_AUTO_UPGRADE";
 pub const ACTOR_VAR: &str = "BD_ACTOR";
+/// Default label filter: comma-separated labels, `*` wildcard; empty clears it.
+pub const LABEL_VAR: &str = "BD_LABEL";
 pub const REPL_LISTEN_ADDR_VAR: &str = "BD_REPL_LISTEN_ADDR";
 pub const REPL_MAX_CONNECTIONS_VAR: &str = "BD_REPL_MAX_CONNECTIONS";
 pub const LOG_STDOUT_VAR: &str = "BD_LOG_STDOUT";
@@ -19,6 +21,7 @@ pub const TEST_FAST_VAR: &str = "BD_TEST_FAST";
 pub const ENV_OVERRIDE_KEYS: &[&str] = &[
     NO_AUTO_UPGRADE_VAR,
     ACTOR_VAR,
+    LABEL_VAR,
     REPL_LISTEN_ADDR_VAR,
     REPL_MAX_CONNECTIONS_VAR,
     LOG_STDOUT_VAR,
@@ -39,6 +42,7 @@ pub const CONFIG_ENV_KEYS: &[&str] = &[
     CONFIG_DIR_VAR,
     NO_AUTO_UPGRADE_VAR,
     ACTOR_VAR,
+    LABEL_VAR,
     REPL_LISTEN_ADDR_VAR,
     REPL_MAX_CONNECTIONS_VAR,
     LOG_STDOUT_VAR,

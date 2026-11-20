@@ -322,10 +322,20 @@ fn has_label_matching(view: &BeadView, pattern: &str) -> bool {
         .any(|label| label_matches(pattern, label.as_str()))
 }
 
+/// The label-filter wildcard: matches any run of characters.
+const LABEL_WILDCARD: char = '*';
+
+/// Whether a label filter entry is a pattern (contains the wildcard) rather than a
+/// literal label. `Label` itself accepts `*`, so callers that turn filter entries into
+/// labels must skip patterns.
+pub fn is_label_pattern(entry: &str) -> bool {
+    entry.contains(LABEL_WILDCARD)
+}
+
 /// Whether `label` matches a label filter `pattern`: exact, unless the pattern
 /// contains `*`, which matches any run of characters (`project:*`, `*3d-sim*`).
 fn label_matches(pattern: &str, label: &str) -> bool {
-    let parts: Vec<&str> = pattern.split('*').collect();
+    let parts: Vec<&str> = pattern.split(LABEL_WILDCARD).collect();
     let (first, rest) = parts.split_first().expect("split yields at least one part");
     let Some((last, middle)) = rest.split_last() else {
         return label == *first;

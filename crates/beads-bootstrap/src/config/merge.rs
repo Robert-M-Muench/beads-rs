@@ -21,7 +21,20 @@ pub fn merge_layers(user: Option<ConfigLayer>, repo: Option<ConfigLayer>) -> Con
     if let Some(layer) = repo {
         layer.apply_to(&mut config);
     }
+    // `labels = []` in a layer clears an inherited default; it never means "filter by
+    // nothing", so the effective config holds `None` instead of an empty list.
+    config.defaults.labels = config.defaults.labels.take().and_then(non_blank_labels);
     config
+}
+
+/// Trimmed, non-blank labels, or `None` when none remain.
+fn non_blank_labels<S: AsRef<str>>(labels: impl IntoIterator<Item = S>) -> Option<Vec<String>> {
+    let labels: Vec<String> = labels
+        .into_iter()
+        .map(|label| label.as_ref().trim().to_string())
+        .filter(|label| !label.is_empty())
+        .collect();
+    (!labels.is_empty()).then_some(labels)
 }
 
 pub fn apply_env_overrides(config: &mut Config) {
@@ -48,6 +61,11 @@ where
                 }
             }
         }
+    }
+
+    if let Some(raw) = lookup(config_env::LABEL_VAR) {
+        // Set but empty (`BD_LABEL=`) clears a default from the config files.
+        config.defaults.labels = non_blank_labels(raw.split(','));
     }
 
     if let Some(raw) = lookup(config_env::REPL_LISTEN_ADDR_VAR) {
@@ -371,6 +389,58 @@ mod tests {
         let core = config.checkpoint_groups.get("core").expect("core group");
         assert_eq!(core.debounce_ms, Some(5));
         assert_eq!(core.max_interval_ms, Some(20));
+    }
+
+    #[test]
+    fn env_label_sets_and_clears_default_labels() {
+        let labels = |raw: &'static str, config_labels: Option<&[&str]>| {
+            let mut config = Config::default();
+            config.defaults.labels =
+                config_labels.map(|labels| labels.iter().map(|l| l.to_string()).collect());
+            apply_env_overrides_from(&mut config, |key: &str| {
+                (key == "BD_LABEL").then(|| raw.to_string())
+            });
+            config.defaults.labels
+        };
+
+        assert_eq!(
+            labels(" project:a , ,p:*", None),
+            Some(vec!["project:a".to_string(), "p:*".to_string()])
+        );
+        assert_eq!(
+            labels("project:b", Some(&["project:a"])),
+            Some(vec!["project:b".to_string()])
+        );
+        assert_eq!(labels("", Some(&["project:a"])), None);
+        assert_eq!(labels(" , ", Some(&["project:a"])), None);
+
+        // Unset leaves the config-file default alone.
+        let mut config = Config::default();
+        config.defaults.labels = Some(vec!["project:a".to_string()]);
+        apply_env_overrides_from(&mut config, |_: &str| None);
+        assert_eq!(config.defaults.labels, Some(vec!["project:a".to_string()]));
+    }
+
+    #[test]
+    fn default_labels_merge_repo_over_user() {
+        let layer = |labels: &[&str]| ConfigLayer {
+            defaults: DefaultsConfig {
+                labels: Some(labels.iter().map(|l| l.to_string()).collect()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let config = merge_layers(Some(layer(&["user"])), Some(layer(&["repo"])));
+        assert_eq!(config.defaults.labels, Some(vec!["repo".to_string()]));
+        let config = merge_layers(Some(layer(&["user"])), Some(ConfigLayer::default()));
+        assert_eq!(config.defaults.labels, Some(vec!["user".to_string()]));
+        // An empty (or blank) repo list clears the user default to `None`, not `Some([])`.
+        let config = merge_layers(Some(layer(&["user"])), Some(layer(&[])));
+        assert_eq!(config.defaults.labels, None);
+        let config = merge_layers(Some(layer(&["user"])), Some(layer(&[" ", ""])));
+        assert_eq!(config.defaults.labels, None);
+        let config = merge_layers(None, Some(layer(&[" repo "])));
+        assert_eq!(config.defaults.labels, Some(vec!["repo".to_string()]));
     }
 
     #[test]

@@ -51,6 +51,25 @@ ready:
   -n, --limit
   --json
 
+blocked:
+  -l, --label
+  --label-any
+  --json
+
+stale:
+  -d, --days
+  -s, --status
+  -l, --label
+  --label-any
+  -n, --limit
+  --json
+
+search <query>:
+  -l, --label
+  --label-any
+  -n, --limit
+  --json
+
 update:
   --title
   -d, --description
@@ -131,9 +150,23 @@ global flags:
 --client-request-id <uuid>  Client request id for idempotent retries
 --require-min-seen <json>   Read gating: applied watermarks to satisfy before reads
 --wait-timeout-ms <ms>      Optional wait for require-min-seen (0/omit = no wait)
+--no-default-labels         Ignore the default label filter for this invocation
 -q, --quiet        Errors only
 -v, --verbose      Debug output
 --version
+
+default label filter:
+
+`BD_LABEL=project:foo` (comma-separated, `*` wildcard; or `[defaults] labels = [...]` in
+config.toml / beads.toml, which `BD_LABEL` overrides and `BD_LABEL=` clears) is the
+default `-l` for ready, list, count, blocked, stale and search. Explicit `-l`,
+`--label-any` or `--no-labels` replace it; `--no-default-labels` ignores it. Human output
+notes an active default on stderr; `--json` stdout is unchanged.
+`bd create` (including `-f`) adds the default's labels to each new bead, on top of
+explicit `-l`, so the bead shows in the scoped listings. Entries with `*` are patterns,
+not labels, and are skipped: under `BD_LABEL=project:foo,team:*` give a matching label
+yourself (`-l team:ops`) or the bead fails the `team:*` filter. `--no-default-labels`
+adds none.
 
 require-min-seen JSON example (copy from admin status for accuracy):
 

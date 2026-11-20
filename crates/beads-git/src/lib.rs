@@ -12,6 +12,7 @@ pub mod error;
 pub mod observe;
 mod paths;
 pub mod sync;
+pub mod transport;
 pub mod wire;
 
 pub use error::{SyncError, WireError};
@@ -23,6 +24,7 @@ pub use sync::{
     read_state_at_oid, read_state_at_oid_for_migration, sync_with_retry,
     sync_with_retry_with_observer,
 };
+pub use transport::set_transport_timeouts;
 
 #[doc(hidden)]
 pub mod test_support {
