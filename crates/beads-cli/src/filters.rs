@@ -52,6 +52,15 @@ pub struct LabelFilterArgs {
     pub labels_any: Vec<String>,
 }
 
+/// The one stderr note for a default label (`BD_LABEL` / `[defaults] labels`) in effect:
+/// `what` it did, and what `--no-default-labels` would do instead. Human mode only (not
+/// `--json`, not `--quiet`), so stdout and machine output stay clean.
+pub(crate) fn note_default_labels(ctx: &CliRuntimeCtx, what: &str, opt_out: &str) {
+    if !ctx.json && !ctx.quiet {
+        eprintln!("note: {what} (BD_LABEL or [defaults] labels); --no-default-labels {opt_out}");
+    }
+}
+
 impl LabelFilterArgs {
     /// The effective label constraint: the flags when any is given, otherwise the
     /// runtime's default labels (`BD_LABEL` / `[defaults] labels`) as `--label`.
@@ -67,12 +76,11 @@ impl LabelFilterArgs {
         let Some(defaults) = &ctx.default_labels else {
             return LabelFilter::default();
         };
-        if !ctx.json && !ctx.quiet {
-            eprintln!(
-                "note: default label filter -l {} (BD_LABEL or [defaults] labels); --no-default-labels shows all",
-                defaults.join(",")
-            );
-        }
+        note_default_labels(
+            ctx,
+            &format!("default label filter -l {}", defaults.join(",")),
+            "shows all",
+        );
         LabelFilter {
             labels: Some(defaults.clone()),
             labels_any: None,

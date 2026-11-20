@@ -567,6 +567,114 @@ fn test_default_label_filter_from_bd_label() {
 }
 
 #[test]
+fn test_create_adds_default_labels() {
+    let repo = TestRepo::new();
+    repo.bd().arg("init").assert().success();
+    let scope = "project:alpha,team:*";
+
+    // Sorted labels of the bead `bd create <args> --json` made, with BD_LABEL=scope.
+    let created_labels = |args: &[&str]| -> Vec<String> {
+        let output = repo
+            .bd()
+            .env("BD_LABEL", scope)
+            .arg("create")
+            .args(args)
+            .arg("--json")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let value: serde_json::Value = serde_json::from_slice(&output).expect("CLI JSON");
+        // No labels: the field is omitted.
+        let mut labels: Vec<String> = cli_single_issue_json(&value)["labels"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|label| label.as_str().expect("label").to_string())
+            .collect();
+        labels.sort();
+        labels
+    };
+
+    // The literal default is added, on top of explicit labels; the wildcard is not.
+    assert_eq!(created_labels(&["Scoped"]), ["project:alpha"]);
+    assert_eq!(
+        created_labels(&["Scoped bug", "-l", "bug"]),
+        ["bug", "project:alpha"]
+    );
+    assert_eq!(
+        created_labels(&["Repeated", "-l", "project:alpha"]),
+        ["project:alpha"]
+    );
+    assert!(created_labels(&["Unscoped", "--no-default-labels"]).is_empty());
+
+    // Each bead of a markdown file gets it too, with its own labels and the command's -l.
+    let plan = repo.path().join("plan.md");
+    std::fs::write(
+        &plan,
+        "## From file\n\n### Labels\nfile-label\n\n## Also from file\n",
+    )
+    .expect("write plan");
+    repo.bd()
+        .env("BD_LABEL", scope)
+        .args(["create", "-l", "batch", "-f"])
+        .arg(&plan)
+        .assert()
+        .success();
+
+    // Human output names what was added and skipped, on stderr.
+    repo.bd()
+        .env("BD_LABEL", scope)
+        .args(["create", "Noted"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "adding default labels project:alpha; not adding wildcard team:*",
+        ));
+
+    // Every scoped bead shows in the scoped ready list; the unscoped one does not.
+    let output = repo
+        .bd()
+        .env("BD_LABEL", "project:alpha")
+        .args(["ready", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(
+        cli_sorted_titles(&output),
+        [
+            "Also from file",
+            "From file",
+            "Noted",
+            "Repeated",
+            "Scoped",
+            "Scoped bug"
+        ]
+    );
+    let output = repo
+        .bd()
+        .args(["ready", "-l", "file-label", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(cli_sorted_titles(&output), ["From file"]);
+    let output = repo
+        .bd()
+        .args(["ready", "-l", "batch", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(cli_sorted_titles(&output), ["Also from file", "From file"]);
+}
+
+#[test]
 fn test_ready_label_filters() {
     let repo = TestRepo::new();
     repo.bd().arg("init").assert().success();

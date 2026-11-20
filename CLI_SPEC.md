@@ -162,6 +162,11 @@ config.toml / beads.toml, which `BD_LABEL` overrides and `BD_LABEL=` clears) is 
 default `-l` for ready, list, count, blocked, stale and search. Explicit `-l`,
 `--label-any` or `--no-labels` replace it; `--no-default-labels` ignores it. Human output
 notes an active default on stderr; `--json` stdout is unchanged.
+`bd create` (including `-f`) adds the default's labels to each new bead, on top of
+explicit `-l`, so the bead shows in the scoped listings. Entries with `*` are patterns,
+not labels, and are skipped: under `BD_LABEL=project:foo,team:*` give a matching label
+yourself (`-l team:ops`) or the bead fails the `team:*` filter. `--no-default-labels`
+adds none.
 
 require-min-seen JSON example (copy from admin status for accuracy):
 

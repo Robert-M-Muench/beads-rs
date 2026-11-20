@@ -9,12 +9,14 @@ use clap::Args;
 use super::common::fetch_issue;
 use super::input::{FileTextArg, InlineTextArg, resolve_text_input, text_input_uses_stdin};
 use super::{CommandResult, print_ok};
+use crate::filters::note_default_labels;
 use crate::render::{print_json, print_line};
 use crate::runtime::{CliRuntimeCtx, send, send_raw};
 use beads_api::{Issue, QueryResult};
 use beads_core::{BeadType, Priority};
 use beads_surface::OpResult;
 use beads_surface::ipc::{CreatePayload, Request, Response, ResponsePayload};
+use beads_surface::query::is_label_pattern;
 
 #[derive(Args, Debug)]
 pub struct CreateArgs {
@@ -122,7 +124,8 @@ pub fn handle(ctx: &CliRuntimeCtx, mut args: CreateArgs) -> CommandResult<()> {
                 validation_error("create", "cannot specify both title and --file flag").into(),
             );
         }
-        return handle_from_markdown_file(ctx, &path);
+        let labels = create_labels(ctx, &mut args);
+        return handle_from_markdown_file(ctx, &path, &labels);
     }
 
     let title = resolve_title(args.title.take(), args.title_flag.take())?;
@@ -189,8 +192,7 @@ pub fn handle(ctx: &CliRuntimeCtx, mut args: CreateArgs) -> CommandResult<()> {
     let bead_type = args.bead_type.unwrap_or(BeadType::Task);
     let priority = args.priority.unwrap_or_default();
 
-    let mut labels = args.labels;
-    labels.extend(args.label);
+    let labels = create_labels(ctx, &mut args);
 
     if args.force && !ctx.json {
         tracing::warn!("note: --force is ignored in bd (not required)");
@@ -329,7 +331,13 @@ fn resolve_title(positional: Option<String>, flag: Option<String>) -> CommandRes
     }
 }
 
-fn handle_from_markdown_file(ctx: &CliRuntimeCtx, path: &std::path::Path) -> CommandResult<()> {
+/// Creates one bead per `## ` section of `path`; each gets its own labels plus `labels`
+/// (the command line's `-l` and the default labels).
+fn handle_from_markdown_file(
+    ctx: &CliRuntimeCtx,
+    path: &std::path::Path,
+    labels: &[String],
+) -> CommandResult<()> {
     let templates = parse_markdown_file(path)?;
     if templates.is_empty() {
         return Err(validation_error("file", "no issues found in markdown file").into());
@@ -365,7 +373,7 @@ fn handle_from_markdown_file(ctx: &CliRuntimeCtx, path: &std::path::Path) -> Com
                 assignee: t.assignee.clone(),
                 external_ref: None,
                 estimated_minutes: None,
-                labels: t.labels.clone(),
+                labels: [t.labels.as_slice(), labels].concat(),
                 dependencies,
             },
         };
@@ -659,11 +667,60 @@ fn parse_md_list(content: &str) -> Vec<String> {
         .collect()
 }
 
+/// The labels every bead of this command gets: `-l/--labels` plus the default labels.
+fn create_labels(ctx: &CliRuntimeCtx, args: &mut CreateArgs) -> Vec<String> {
+    let mut labels = std::mem::take(&mut args.labels);
+    labels.append(&mut args.label);
+    labels.extend(default_create_labels(ctx));
+    labels
+}
+
+/// Labels the default label filter (`BD_LABEL` / `[defaults] labels`) adds to new beads, so
+/// a bead created in a scoped shell shows in the scoped listings. They are added to the
+/// explicit labels (the daemon stores a set, so repeats collapse). Label patterns
+/// (`project:*`) are filters, not labels, and are skipped; the note names both.
+fn default_create_labels(ctx: &CliRuntimeCtx) -> Vec<String> {
+    let Some(defaults) = &ctx.default_labels else {
+        return Vec::new();
+    };
+    let (patterns, labels): (Vec<String>, Vec<String>) = defaults
+        .iter()
+        .cloned()
+        .partition(|label| is_label_pattern(label));
+    let mut parts = Vec::new();
+    if !labels.is_empty() {
+        parts.push(format!("adding default labels {}", labels.join(",")));
+    }
+    if !patterns.is_empty() {
+        parts.push(format!("not adding wildcard {}", patterns.join(",")));
+    }
+    note_default_labels(ctx, &parts.join("; "), "skips");
+    labels
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::commands::CommandError;
     use beads_core::NamespaceId;
+
+    #[test]
+    fn default_create_labels_skip_wildcards() {
+        let ctx = |defaults: Option<&[&str]>| CliRuntimeCtx {
+            // JSON mode keeps the note off the test's stderr.
+            json: true,
+            default_labels: defaults
+                .map(|labels| labels.iter().map(|label| label.to_string()).collect()),
+            ..Default::default()
+        };
+
+        assert!(default_create_labels(&ctx(None)).is_empty());
+        assert_eq!(
+            default_create_labels(&ctx(Some(&["project:a", "team:*", "x"]))),
+            ["project:a", "x"]
+        );
+        assert!(default_create_labels(&ctx(Some(&["*"]))).is_empty());
+    }
 
     fn sample_ctx() -> CliRuntimeCtx {
         CliRuntimeCtx {
